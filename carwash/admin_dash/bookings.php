@@ -1,6 +1,15 @@
 <?php
+session_set_cookie_params([
+    'lifetime' => 60 * 60 * 24 * 7,
+    'path' => '/',
+    'domain' => '',
+    'secure' => false,
+    'httponly' => true,
+    'samesite' => 'Lax'
+]);
 session_start();
 
+// Check if user is logged in and is admin
 if (!isset($_SESSION['userEmail']) || $_SESSION['userRole'] !== 'admin') {
     header('Location: ../landing/login/login.php');
     exit;
@@ -14,233 +23,182 @@ if (file_exists($dbPath)) {
         die("Database connection failed. Please check your database.php file.");
     }
 } else {
-    // Fallback: Create a basic database connection if file doesn't exist
-    $servername = "localhost";
-    $username = "root";
-    $password = "";
-    $database = "smartwash";
-    $conn = new mysqli($servername, $username, $password, $database);
-    if ($conn->connect_error) {
-        die("Connection failed: " . $conn->connect_error);
+    die("Database configuration file not found.");
+}
+
+$adminEmail = $_SESSION['userEmail'];
+$adminName = $_SESSION['userName'] ?? 'Admin';
+
+// Get database name
+$dbNameQuery = "SELECT DATABASE() AS dbname";
+$dbNameResult = $conn->query($dbNameQuery);
+$dbName = $dbNameResult ? $dbNameResult->fetch_assoc()['dbname'] : 'smartwash_db';
+
+// Detect customers table columns
+$customerEmailCol = null;
+$customerPhoneCol = null;
+$customerNameCol = 'name';
+
+$customerColsQuery = "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
+                      WHERE TABLE_SCHEMA = '$dbName' AND TABLE_NAME = 'customers'";
+$customerColsResult = $conn->query($customerColsQuery);
+
+$availableCustomerCols = [];
+if ($customerColsResult && $customerColsResult->num_rows > 0) {
+    while ($col = $customerColsResult->fetch_assoc()) {
+        $colName = $col['COLUMN_NAME'];
+        $availableCustomerCols[] = $colName;
+        $lower = strtolower($colName);
+        
+        // Detect email column
+        if (strpos($lower, 'email') !== false) {
+            $customerEmailCol = $colName;
+        }
+        
+        // Detect phone column
+        if (strpos($lower, 'phone') !== false || strpos($lower, 'contact') !== false || strpos($lower, 'mobile') !== false) {
+            $customerPhoneCol = $colName;
+        }
+        
+        // Detect name column
+        if (in_array($lower, ['name', 'full_name', 'customer_name'])) {
+            $customerNameCol = $colName;
+        }
+    }
+    
+    // Handle concatenated name columns
+    if (in_array('first_name', $availableCustomerCols) && in_array('last_name', $availableCustomerCols)) {
+        $customerNameCol = "CONCAT(first_name, ' ', last_name)";
     }
 }
 
-// Handle booking actions (add, edit, delete, update status)
-$message = '';
-$messageType = '';
-
-// Handle AJAX requests for real-time sync
-if (isset($_GET['action']) && $_GET['action'] === 'get_bookings_json') {
-    header('Content-Type: application/json');
-    
-    $bookingsQuery = "SELECT b.*, 
-                      s.name AS service_name, 
-                      s.price AS service_price,
-                      c.name AS customer_name,
-                      c.email AS customer_email,
-                      c.phone AS customer_phone
-                      FROM bookings b
-                      LEFT JOIN services s ON b.service_id = s.id
-                      LEFT JOIN customers c ON b.customer_id = c.id
-                      ORDER BY b.booking_date DESC, b.booking_time DESC";
-    
-    $result = $conn->query($bookingsQuery);
-    $bookings = [];
-    
-    if ($result) {
-        while ($row = $result->fetch_assoc()) {
-            $bookings[] = [
-                'id' => $row['id'],
-                'service' => $row['service_name'],
-                'date' => date('F j, Y', strtotime($row['booking_date'])),
-                'vehicle' => $row['vehicle_model'],
-                'status' => ucfirst($row['status']),
-                'time' => date('g:i A', strtotime($row['booking_time'])),
-                'rawDate' => $row['booking_date'],
-                'price' => $row['service_price'],
-                'customer_name' => $row['customer_name'],
-                'customer_email' => $row['customer_email'],
-                'customer_phone' => $row['customer_phone']
-            ];
-        }
-    }
-    
-    echo json_encode($bookings);
-    $conn->close();
-    exit;
-}
-
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $action = $_POST['action'] ?? '';
-    
-    if ($action === 'add_booking') {
-        $customer_id = $conn->real_escape_string($_POST['customer_id']);
-        $service_id = $conn->real_escape_string($_POST['service_id']);
-        $vehicle_model = $conn->real_escape_string($_POST['vehicle_model']);
-        $booking_date = $conn->real_escape_string($_POST['booking_date']);
-        $booking_time = $conn->real_escape_string($_POST['booking_time']);
-        $status = 'pending';
-        
-        $sql = "INSERT INTO bookings (customer_id, service_id, vehicle_model, booking_date, booking_time, status, created_at) 
-                VALUES ('$customer_id', '$service_id', '$vehicle_model', '$booking_date', '$booking_time', '$status', NOW())";
-        
-        if ($conn->query($sql)) {
-            $message = 'Booking added successfully!';
-            $messageType = 'success';
-        } else {
-            $message = 'Error adding booking: ' . $conn->error;
-            $messageType = 'error';
-        }
-    }
-    
-    if ($action === 'update_status') {
-        $booking_id = $conn->real_escape_string($_POST['booking_id']);
-        $status = $conn->real_escape_string($_POST['status']);
-        
-        $sql = "UPDATE bookings SET status = '$status' WHERE id = '$booking_id'";
-        
-        if ($conn->query($sql)) {
-            $message = 'Booking status updated successfully!';
-            $messageType = 'success';
-        } else {
-            $message = 'Error updating status: ' . $conn->error;
-            $messageType = 'error';
-        }
-    }
-    
-    if ($action === 'delete_booking') {
-        $booking_id = $conn->real_escape_string($_POST['booking_id']);
-        
-        $sql = "DELETE FROM bookings WHERE id = '$booking_id'";
-        
-        if ($conn->query($sql)) {
-            $message = 'Booking deleted successfully!';
-            $messageType = 'success';
-        } else {
-            $message = 'Error deleting booking: ' . $conn->error;
-            $messageType = 'error';
-        }
-    }
-}
-
-// Detect column names dynamically
-$serviceNameCol = null;
-$servicePriceCol = null;
-$servicePkCol = null;
-
-$svcColsRes = $conn->query("SELECT COLUMN_NAME, COLUMN_KEY FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'services'");
-if ($svcColsRes) {
-    $svcCols = [];
-    while ($c = $svcColsRes->fetch_assoc()) { $svcCols[] = $c; }
-    foreach ($svcCols as $colInfo) {
-        $col = $colInfo['COLUMN_NAME'];
-        $lower = strtolower($col);
-        if ($serviceNameCol === null && in_array($lower, ['name', 'service_name', 'title', 'service', 'service_title'])) {
-            $serviceNameCol = $col;
-        }
-        if ($servicePriceCol === null && in_array($lower, ['price', 'service_price', 'cost', 'amount'])) {
-            $servicePriceCol = $col;
-        }
-        if ($servicePkCol === null && isset($colInfo['COLUMN_KEY']) && strtoupper($colInfo['COLUMN_KEY']) === 'PRI') {
-            $servicePkCol = $col;
-        }
-    }
-}
-
-if (!$servicePkCol) $servicePkCol = 'id';
-if (!$serviceNameCol) $serviceNameCol = 'name';
-if (!$servicePriceCol) $servicePriceCol = 'price';
-
+// Detect bookings table columns
+$bookingIdCol = 'booking_id';
 $bookingServiceCol = 'service_id';
+$bookingCustomerCol = 'customer_id';
+$bookingVehicleCol = 'vehicle_id';
 
-$serviceSelectParts = ["s.`$serviceNameCol` AS service_name", "s.`$servicePriceCol` AS service_price"];
-$bookingsQuery = "SELECT b.*, " . implode(', ', $serviceSelectParts) . " FROM bookings b LEFT JOIN services s ON b.`$bookingServiceCol` = s.`$servicePkCol` ORDER BY b.booking_date DESC, b.booking_time DESC";
+$bookingCols = $conn->query("SELECT COLUMN_NAME, COLUMN_KEY FROM INFORMATION_SCHEMA.COLUMNS 
+                              WHERE TABLE_SCHEMA = '$dbName' AND TABLE_NAME = 'bookings'");
+if ($bookingCols && $bookingCols->num_rows > 0) {
+    while ($col = $bookingCols->fetch_assoc()) {
+        $colName = $col['COLUMN_NAME'];
+        $lower = strtolower($colName);
+        
+        if ($col['COLUMN_KEY'] === 'PRI') {
+            $bookingIdCol = $colName;
+        }
+        if (strpos($lower, 'service') !== false && strpos($lower, 'id') !== false) {
+            $bookingServiceCol = $colName;
+        }
+        if (strpos($lower, 'customer') !== false && strpos($lower, 'id') !== false) {
+            $bookingCustomerCol = $colName;
+        }
+        if (strpos($lower, 'vehicle') !== false && strpos($lower, 'id') !== false) {
+            $bookingVehicleCol = $colName;
+        }
+    }
+}
+
+// Detect services table columns
+$serviceNameCol = 'service_name';
+$servicePriceCol = 'price';
+$serviceCols = $conn->query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
+                              WHERE TABLE_SCHEMA = '$dbName' AND TABLE_NAME = 'services'");
+if ($serviceCols && $serviceCols->num_rows > 0) {
+    while ($col = $serviceCols->fetch_assoc()) {
+        $colName = $col['COLUMN_NAME'];
+        $lower = strtolower($colName);
+        if (in_array($lower, ['name', 'service_name'])) {
+            $serviceNameCol = $colName;
+        }
+        if (in_array($lower, ['price', 'base_price', 'total_amount'])) {
+            $servicePriceCol = $colName;
+        }
+    }
+}
+
+// Build dynamic SELECT for customers
+$customerSelectCols = "customer_id, $customerNameCol AS customer_name";
+if ($customerEmailCol) {
+    $customerSelectCols .= ", `$customerEmailCol` AS email";
+}
+if ($customerPhoneCol) {
+    $customerSelectCols .= ", `$customerPhoneCol` AS phone";
+}
+
+// Fetch all customers for dropdown
+$customersQuery = "SELECT $customerSelectCols FROM customers ORDER BY customer_name";
+$customersResult = $conn->query($customersQuery);
+$customers = [];
+if ($customersResult) {
+    while ($row = $customersResult->fetch_assoc()) {
+        $customers[] = $row;
+    }
+}
+
+// Fetch all services for dropdown
+$servicesQuery = "SELECT service_id, `$serviceNameCol` AS service_name, `$servicePriceCol` AS price FROM services ORDER BY service_name";
+$servicesResult = $conn->query($servicesQuery);
+$services = [];
+if ($servicesResult) {
+    while ($row = $servicesResult->fetch_assoc()) {
+        $services[] = $row;
+    }
+}
+
+// Fetch all bookings with details
+$bookingsQuery = "SELECT b.*, 
+    s.`$serviceNameCol` AS service_name,
+    s.`$servicePriceCol` AS service_price,
+    c.`$customerNameCol` AS customer_name
+    FROM bookings b
+    LEFT JOIN services s ON b.`$bookingServiceCol` = s.service_id
+    LEFT JOIN customers c ON b.`$bookingCustomerCol` = c.customer_id
+    ORDER BY b.booking_date DESC, b.booking_time DESC";
 $bookingsResult = $conn->query($bookingsQuery);
 
 $bookings = [];
 if ($bookingsResult) {
-    while ($r = $bookingsResult->fetch_assoc()) {
-        $bookings[] = $r;
-    }
-}
-
-// Detect customer columns
-$nameExpr = null;
-$emailCol = null;
-$phoneCol = null;
-$customerPkCol = null;
-
-$colsRes = $conn->query("SELECT COLUMN_NAME, COLUMN_KEY FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'customers'");
-$cols = [];
-if ($colsRes) {
-    while ($c = $colsRes->fetch_assoc()) {
-        $cols[] = $c['COLUMN_NAME'];
-        if ($customerPkCol === null && isset($c['COLUMN_KEY']) && strtoupper($c['COLUMN_KEY']) === 'PRI') {
-            $customerPkCol = $c['COLUMN_NAME'];
+    while ($row = $bookingsResult->fetch_assoc()) {
+        // Get vehicle info if exists
+        if (isset($row[$bookingVehicleCol]) && $row[$bookingVehicleCol]) {
+            $vehicleQuery = "SELECT * FROM vehicles WHERE vehicle_id = ? LIMIT 1";
+            $vStmt = $conn->prepare($vehicleQuery);
+            $vStmt->bind_param("i", $row[$bookingVehicleCol]);
+            $vStmt->execute();
+            $vResult = $vStmt->get_result();
+            
+            if ($vResult && $vResult->num_rows > 0) {
+                $vehicle = $vResult->fetch_assoc();
+                $row['vehicle_info'] = trim(($vehicle['make'] ?? '') . ' ' . ($vehicle['model'] ?? ''));
+                $row['plate_number'] = $vehicle['plate_number'] ?? '';
+            } else {
+                $row['vehicle_info'] = 'N/A';
+                $row['plate_number'] = 'N/A';
+            }
+        } else {
+            $row['vehicle_info'] = 'N/A';
+            $row['plate_number'] = 'N/A';
         }
+        
+        $bookings[] = $row;
     }
 }
 
-if (!$customerPkCol) $customerPkCol = 'id';
-
-if (in_array('name', $cols)) {
-    $nameExpr = 'name';
-} elseif (in_array('full_name', $cols)) {
-    $nameExpr = 'full_name';
-} elseif (in_array('first_name', $cols) && in_array('last_name', $cols)) {
-    $nameExpr = "CONCAT(first_name, ' ', last_name)";
-} else {
-    $nameExpr = 'name';
-}
-
-foreach (['email', 'email_address', 'customer_email'] as $cand) {
-    if (in_array($cand, $cols)) { $emailCol = $cand; break; }
-}
-if (!$emailCol) $emailCol = 'email';
-
-foreach (['phone', 'phone_number', 'contact', 'mobile'] as $cand) {
-    if (in_array($cand, $cols)) { $phoneCol = $cand; break; }
-}
-if (!$phoneCol) $phoneCol = 'phone';
-
-$customersQuery = "SELECT `$customerPkCol` AS id, $nameExpr AS name, `$emailCol` AS email, `$phoneCol` AS phone FROM customers ORDER BY name";
-$customersResult = $conn->query($customersQuery);
-
-$servicesQuery = "SELECT `$servicePkCol` AS id, `$serviceNameCol` AS name, `$servicePriceCol` AS price FROM services ORDER BY name";
-$servicesResult = $conn->query($servicesQuery);
-
-$customersMap = [];
-if ($customersResult) {
-    while ($cust = $customersResult->fetch_assoc()) {
-        if (isset($cust['id']) && $cust['id'] !== null) {
-            $customersMap[$cust['id']] = $cust;
-        }
+// Get customer details if viewing specific customer
+$selectedCustomer = null;
+if (isset($_GET['customer_id'])) {
+    $custId = intval($_GET['customer_id']);
+    $custQuery = "SELECT $customerSelectCols FROM customers WHERE customer_id = ?";
+    $custStmt = $conn->prepare($custQuery);
+    $custStmt->bind_param("i", $custId);
+    $custStmt->execute();
+    $custResult = $custStmt->get_result();
+    if ($custResult && $custResult->num_rows > 0) {
+        $selectedCustomer = $custResult->fetch_assoc();
     }
 }
-
-foreach ($bookings as &$b) {
-    $cid = $b['customer_id'] ?? null;
-    if ($cid && isset($customersMap[$cid])) {
-        $b['customer_name'] = $customersMap[$cid]['name'] ?? null;
-        $b['customer_email'] = $customersMap[$cid]['email'] ?? null;
-        $b['customer_phone'] = $customersMap[$cid]['phone'] ?? null;
-    } else {
-        $b['customer_name'] = $b['customer_name'] ?? null;
-        $b['customer_email'] = $b['customer_email'] ?? null;
-        $b['customer_phone'] = $b['customer_phone'] ?? null;
-    }
-}
-
-$statsQuery = "SELECT 
-                COUNT(*) as total,
-                SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
-                SUM(CASE WHEN status = 'confirmed' THEN 1 ELSE 0 END) as confirmed,
-                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
-                SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelled,
-                SUM(CASE WHEN DATE(booking_date) = CURDATE() THEN 1 ELSE 0 END) as today
-                FROM bookings";
-$statsResult = $conn->query($statsQuery);
-$stats = $statsResult->fetch_assoc();
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -323,72 +281,22 @@ $stats = $statsResult->fetch_assoc();
             color: #333;
         }
 
-        .sync-indicator {
+        .admin-info {
             display: flex;
             align-items: center;
-            gap: 0.5rem;
-            padding: 0.5rem 1rem;
-            background: #d4edda;
-            color: #155724;
-            border-radius: 20px;
-            font-size: 0.9rem;
+            gap: 1rem;
         }
 
-        .sync-dot {
-            width: 8px;
-            height: 8px;
+        .admin-avatar {
+            width: 45px;
+            height: 45px;
             border-radius: 50%;
-            background: #28a745;
-            animation: pulse 2s infinite;
-        }
-
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 1.5rem;
-            margin-bottom: 2rem;
-        }
-
-        .stat-card {
-            background: white;
-            padding: 1.5rem;
-            border-radius: 15px;
-            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
-            transition: all 0.3s ease;
-            position: relative;
-            overflow: hidden;
-        }
-
-        .stat-card::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 4px;
-            height: 100%;
-            background: linear-gradient(180deg, #667eea 0%, #764ba2 100%);
-        }
-
-        .stat-card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
-        }
-
-        .stat-value {
-            font-size: 2rem;
-            font-weight: bold;
-            color: #667eea;
-            margin-bottom: 0.3rem;
-        }
-
-        .stat-label {
-            color: #666;
-            font-size: 0.9rem;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 1.5rem;
         }
 
         .card {
@@ -415,7 +323,7 @@ $stats = $statsResult->fetch_assoc();
         }
 
         .btn-primary {
-            padding: 0.8rem 1.5rem;
+            padding: 0.6rem 1.5rem;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
             border: none;
@@ -423,7 +331,8 @@ $stats = $statsResult->fetch_assoc();
             cursor: pointer;
             font-weight: 500;
             transition: all 0.3s ease;
-            font-size: 1rem;
+            text-decoration: none;
+            display: inline-block;
         }
 
         .btn-primary:hover {
@@ -432,71 +341,35 @@ $stats = $statsResult->fetch_assoc();
         }
 
         .btn-secondary {
-            padding: 0.5rem 1rem;
-            background: white;
-            color: #667eea;
-            border: 2px solid #667eea;
-            border-radius: 20px;
+            padding: 0.4rem 0.8rem;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 15px;
             cursor: pointer;
-            font-weight: 500;
+            font-size: 0.8rem;
             transition: all 0.3s ease;
-            font-size: 0.85rem;
         }
 
         .btn-secondary:hover {
-            background: #667eea;
-            color: white;
+            background: #764ba2;
+            transform: translateY(-1px);
         }
 
         .btn-danger {
-            padding: 0.5rem 1rem;
-            background: white;
-            color: #e74c3c;
-            border: 2px solid #e74c3c;
-            border-radius: 20px;
+            padding: 0.4rem 0.8rem;
+            background: #e74c3c;
+            color: white;
+            border: none;
+            border-radius: 15px;
             cursor: pointer;
-            font-weight: 500;
+            font-size: 0.8rem;
             transition: all 0.3s ease;
-            font-size: 0.85rem;
         }
 
         .btn-danger:hover {
-            background: #e74c3c;
-            color: white;
-        }
-
-        .search-bar {
-            display: flex;
-            gap: 1rem;
-            margin-bottom: 2rem;
-        }
-
-        .search-input {
-            flex: 1;
-            padding: 0.8rem 1.5rem;
-            border: 2px solid #e0e0e0;
-            border-radius: 25px;
-            font-size: 1rem;
-            transition: border-color 0.3s ease;
-        }
-
-        .search-input:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-
-        .filter-select {
-            padding: 0.8rem 1.5rem;
-            border: 2px solid #e0e0e0;
-            border-radius: 25px;
-            font-size: 1rem;
-            cursor: pointer;
-            transition: border-color 0.3s ease;
-        }
-
-        .filter-select:focus {
-            outline: none;
-            border-color: #667eea;
+            background: #c0392b;
+            transform: translateY(-1px);
         }
 
         .table-container {
@@ -557,133 +430,9 @@ $stats = $statsResult->fetch_assoc();
             color: #721c24;
         }
 
-        .status-in {
+        .status-in-progress, .status-in_progress {
             background: #e7f3ff;
             color: #0056b3;
-        }
-
-        .modal {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.5);
-            z-index: 1000;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .modal.active {
-            display: flex;
-        }
-
-        .modal-content {
-            background: white;
-            padding: 2rem;
-            border-radius: 15px;
-            max-width: 600px;
-            width: 90%;
-            max-height: 90vh;
-            overflow-y: auto;
-        }
-
-        .modal-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 1.5rem;
-            padding-bottom: 1rem;
-            border-bottom: 2px solid #f0f0f0;
-        }
-
-        .modal-title {
-            font-size: 1.5rem;
-            font-weight: 600;
-            color: #333;
-        }
-
-        .close-btn {
-            font-size: 2rem;
-            color: #999;
-            cursor: pointer;
-            background: none;
-            border: none;
-            padding: 0;
-            width: 30px;
-            height: 30px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .close-btn:hover {
-            color: #333;
-        }
-
-        .form-group {
-            margin-bottom: 1.5rem;
-        }
-
-        .form-group label {
-            display: block;
-            margin-bottom: 0.5rem;
-            color: #333;
-            font-weight: 500;
-        }
-
-        .form-group input,
-        .form-group select {
-            width: 100%;
-            padding: 0.8rem;
-            border: 2px solid #e0e0e0;
-            border-radius: 10px;
-            font-size: 1rem;
-            transition: border-color 0.3s ease;
-        }
-
-        .form-group input:focus,
-        .form-group select:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-
-        .form-actions {
-            display: flex;
-            gap: 1rem;
-            justify-content: flex-end;
-            margin-top: 2rem;
-        }
-
-        .message {
-            padding: 1rem 1.5rem;
-            border-radius: 10px;
-            margin-bottom: 1.5rem;
-            animation: slideIn 0.3s ease;
-        }
-
-        .message.success {
-            background: #d4edda;
-            color: #155724;
-            border: 1px solid #c3e6cb;
-        }
-
-        .message.error {
-            background: #f8d7da;
-            color: #721c24;
-            border: 1px solid #f5c6cb;
-        }
-
-        @keyframes slideIn {
-            from {
-                transform: translateY(-20px);
-                opacity: 0;
-            }
-            to {
-                transform: translateY(0);
-                opacity: 1;
-            }
         }
 
         .action-buttons {
@@ -711,6 +460,49 @@ $stats = $statsResult->fetch_assoc();
             display: flex;
         }
 
+        .notification.success {
+            border-left-color: #28a745;
+        }
+
+        .notification.danger {
+            border-left-color: #e74c3c;
+        }
+
+        .notification.warning {
+            border-left-color: #f39c12;
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(400px);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        .filters {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+            flex-wrap: wrap;
+        }
+
+        .filter-input {
+            padding: 0.6rem 1rem;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            font-size: 0.9rem;
+            transition: all 0.3s ease;
+        }
+
+        .filter-input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
         @media (max-width: 768px) {
             .sidebar {
                 transform: translateX(-100%);
@@ -724,14 +516,6 @@ $stats = $statsResult->fetch_assoc();
                 margin-left: 0;
                 width: 100%;
             }
-
-            .stats-grid {
-                grid-template-columns: 1fr;
-            }
-
-            .search-bar {
-                flex-direction: column;
-            }
         }
     </style>
 </head>
@@ -739,27 +523,13 @@ $stats = $statsResult->fetch_assoc();
     <aside class="sidebar" id="sidebar">
         <div class="logo">SmartWash Admin</div>
         <nav>
-            <div class="menu-item active" onclick="window.location.href='index.php'">
-                <span>Dashboard</span>
-            </div>
-            <div class="menu-item" onclick="window.location.href='bookings.php'">
-                <span>Bookings</span>
-            </div>
-            <div class="menu-item" onclick="window.location.href='customers.php'">
-                <span>Customers</span>
-            </div>
-            <div class="menu-item" onclick="window.location.href='services.php'">
-                <span>Services</span>
-            </div>
-            <div class="menu-item" onclick="window.location.href='staff.php'">
-                <span>Staff</span>
-            </div>
-            <div class="menu-item" onclick="window.location.href='reports.php'">
-                <span>Reports</span>
-            </div>
-            <div class="menu-item" onclick="window.location.href='settings.php'">
-                <span>Settings</span>
-            </div>
+            <a href="index.php" class="menu-item">Dashboard</a>
+            <a href="bookings.php" class="menu-item active">Bookings</a>
+            <a href="customers.php" class="menu-item">Customers</a>
+            <a href="services.php" class="menu-item">Services</a>
+            <a href="staff.php" class="menu-item">Staff</a>
+            <a href="reports.php" class="menu-item">Reports</a>
+            <a href="settings.php" class="menu-item">Settings</a>
         </nav>
     </aside>
 
@@ -767,71 +537,42 @@ $stats = $statsResult->fetch_assoc();
         <div class="header">
             <div>
                 <h1>Bookings Management</h1>
-                <p style="color: #666; margin-top: 0.3rem;">Manage all customer bookings</p>
+                <p style="color: #666; margin-top: 0.3rem;">Manage all bookings</p>
             </div>
-            <div class="sync-indicator">
-                <div class="sync-dot"></div>
-                <span>Real-time Sync Active</span>
+            <div class="admin-info">
+                <div>
+                    <p style="font-weight: 600;"><?php echo htmlspecialchars($adminName); ?></p>
+                    <p style="font-size: 0.85rem; color: #666;"><?php echo htmlspecialchars($adminEmail); ?></p>
+                </div>
+                <div class="admin-avatar">👤</div>
             </div>
-        </div>
-
-        <?php if (!empty($message)): ?>
-        <div class="message <?php echo $messageType; ?>">
-            <?php echo htmlspecialchars($message); ?>
-        </div>
-        <?php endif; ?>
-
-        <div class="stats-grid">
-            <div class="stat-card">
-                <div class="stat-value" id="totalCount"><?php echo $stats['total']; ?></div>
-                <div class="stat-label">Total Bookings</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-value" id="pendingCount"><?php echo $stats['pending']; ?></div>
-                <div class="stat-label">Pending</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-value" id="confirmedCount"><?php echo $stats['confirmed']; ?></div>
-                <div class="stat-label">Confirmed</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-value" id="completedCount"><?php echo $stats['completed']; ?></div>
-                <div class="stat-label">Completed</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-value" id="cancelledCount"><?php echo $stats['cancelled']; ?></div>
-                <div class="stat-label">Cancelled</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-value" id="todayCount"><?php echo $stats['today']; ?></div>
-                <div class="stat-label">Today's Bookings</div>
-            </div>
-        </div>
-
-        <div class="search-bar">
-            <input type="text" class="search-input" id="searchInput" placeholder="Search by customer name, vehicle, or service..." onkeyup="filterTable()">
-            <select class="filter-select" id="statusFilter" onchange="filterTable()">
-                <option value="">All Status</option>
-                <option value="pending">Pending</option>
-                <option value="confirmed">Confirmed</option>
-                <option value="completed">Completed</option>
-                <option value="cancelled">Cancelled</option>
-            </select>
-            <button class="btn-primary" onclick="syncWithLocalStorage()">🔄 Sync with Dashboards</button>
-            <button class="btn-primary" onclick="openAddModal()">+ New Booking</button>
         </div>
 
         <div class="card">
             <div class="card-header">
-                <h2 class="card-title">All Bookings</h2>
+                <h2 class="card-title">All Bookings (<?php echo count($bookings); ?>)</h2>
+                <a href="add_booking.php" class="btn-primary">+ New Booking</a>
             </div>
+
+            <div class="filters">
+                <input type="text" class="filter-input" id="searchInput" placeholder="Search by customer name...">
+                <select class="filter-input" id="statusFilter">
+                    <option value="">All Statuses</option>
+                    <option value="pending">Pending</option>
+                    <option value="confirmed">Confirmed</option>
+                    <option value="in-progress">In Progress</option>
+                    <option value="completed">Completed</option>
+                    <option value="cancelled">Cancelled</option>
+                </select>
+                <input type="date" class="filter-input" id="dateFilter">
+            </div>
+
             <div class="table-container">
                 <table id="bookingsTable">
                     <thead>
                         <tr>
                             <th>ID</th>
                             <th>Customer</th>
-                            <th>Contact</th>
                             <th>Service</th>
                             <th>Vehicle</th>
                             <th>Date & Time</th>
@@ -841,41 +582,45 @@ $stats = $statsResult->fetch_assoc();
                         </tr>
                     </thead>
                     <tbody>
-                        <?php if (!empty($bookings)): ?>
-                            <?php foreach ($bookings as $booking): ?>
+                        <?php if (empty($bookings)): ?>
                             <tr>
-                                <td>#<?php echo $booking['id']; ?></td>
-                                <td><?php echo htmlspecialchars($booking['customer_name'] ?? 'N/A'); ?></td>
-                                <td>
-                                    <?php echo htmlspecialchars($booking['customer_email'] ?? 'N/A'); ?><br>
-                                    <small><?php echo htmlspecialchars($booking['customer_phone'] ?? ''); ?></small>
-                                </td>
-                                <td><?php echo htmlspecialchars($booking['service_name'] ?? 'N/A'); ?></td>
-                                <td><?php echo htmlspecialchars($booking['vehicle_model'] ?? 'N/A'); ?></td>
-                                <td>
-                                    <?php echo date('M d, Y', strtotime($booking['booking_date'])); ?><br>
-                                    <small><?php echo date('g:i A', strtotime($booking['booking_time'])); ?></small>
-                                </td>
-                                <td>₱<?php echo number_format($booking['service_price'] ?? 0, 2); ?></td>
-                                <td>
-                                    <span class="status-badge status-<?php echo $booking['status']; ?>">
-                                        <?php echo ucfirst($booking['status']); ?>
-                                    </span>
-                                </td>
-                                <td>
-                                    <div class="action-buttons">
-                                        <button class="btn-secondary" onclick="openStatusModal(<?php echo $booking['id']; ?>, '<?php echo $booking['status']; ?>')">Update</button>
-                                        <button class="btn-danger" onclick="deleteBooking(<?php echo $booking['id']; ?>)">Delete</button>
-                                    </div>
+                                <td colspan="8" style="text-align: center; padding: 2rem; color: #999;">
+                                    No bookings found
                                 </td>
                             </tr>
-                            <?php endforeach; ?>
                         <?php else: ?>
-                            <tr>
-                                <td colspan="9" style="text-align: center; padding: 2rem; color: #999;">
-                                    No bookings found. Click "New Booking" to add one.
-                                </td>
-                            </tr>
+                            <?php foreach ($bookings as $booking): ?>
+                                <tr>
+                                    <td>#<?php echo $booking[$bookingIdCol]; ?></td>
+                                    <td><?php echo htmlspecialchars($booking['customer_name'] ?? 'N/A'); ?></td>
+                                    <td><?php echo htmlspecialchars($booking['service_name'] ?? 'N/A'); ?></td>
+                                    <td>
+                                        <?php echo htmlspecialchars($booking['vehicle_info']); ?>
+                                        <?php if ($booking['plate_number'] !== 'N/A'): ?>
+                                            <br><small style="color: #666;"><?php echo htmlspecialchars($booking['plate_number']); ?></small>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td>
+                                        <?php echo date('M d, Y', strtotime($booking['booking_date'])); ?><br>
+                                        <small><?php echo date('g:i A', strtotime($booking['booking_time'])); ?></small>
+                                    </td>
+                                    <td>₱<?php echo number_format($booking['service_price'] ?? 0, 2); ?></td>
+                                    <td>
+                                        <?php 
+                                        $statusClass = strtolower(str_replace(' ', '-', $booking['status']));
+                                        ?>
+                                        <span class="status-badge status-<?php echo $statusClass; ?>">
+                                            <?php echo ucfirst($booking['status']); ?>
+                                        </span>
+                                    </td>
+                                    <td>
+                                        <div class="action-buttons">
+                                            <button class="btn-secondary" onclick="editBooking(<?php echo $booking[$bookingIdCol]; ?>)">Edit</button>
+                                            <button class="btn-danger" onclick="deleteBooking(<?php echo $booking[$bookingIdCol]; ?>, '<?php echo htmlspecialchars($booking['customer_name']); ?>')">Delete</button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
                         <?php endif; ?>
                     </tbody>
                 </table>
@@ -883,253 +628,106 @@ $stats = $statsResult->fetch_assoc();
         </div>
     </main>
 
-    <!-- Add Booking Modal -->
-    <div class="modal" id="addModal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h2 class="modal-title">New Booking</h2>
-                <button class="close-btn" onclick="closeAddModal()">&times;</button>
-            </div>
-            <form method="POST" action="">
-                <input type="hidden" name="action" value="add_booking">
-                
-                <div class="form-group">
-                    <label for="customer_id">Customer</label>
-                    <select name="customer_id" id="customer_id" required>
-                        <option value="">Select Customer</option>
-                        <?php 
-                        if ($customersResult && $customersResult->num_rows > 0):
-                            mysqli_data_seek($customersResult, 0);
-                            while ($customer = $customersResult->fetch_assoc()): 
-                                if (isset($customer['id']) && $customer['id'] !== null):
-                        ?>
-                            <option value="<?php echo htmlspecialchars($customer['id']); ?>">
-                                <?php
-                                    $dispName = $customer['name'] ?? ('Customer #' . $customer['id']);
-                                    $dispEmail = $customer['email'] ?? '';
-                                    echo htmlspecialchars($dispName) . ($dispEmail ? ' - ' . htmlspecialchars($dispEmail) : '');
-                                ?>
-                            </option>
-                        <?php 
-                                endif;
-                            endwhile; 
-                        endif; 
-                        ?>
-                    </select>
-                </div>
-
-                <div class="form-group">
-                    <label for="service_id">Service</label>
-                    <select name="service_id" id="service_id" required>
-                        <option value="">Select Service</option>
-                        <?php 
-                        if ($servicesResult && $servicesResult->num_rows > 0):
-                            mysqli_data_seek($servicesResult, 0);
-                            while ($service = $servicesResult->fetch_assoc()): 
-                                if (isset($service['id']) && $service['id'] !== null):
-                        ?>
-                            <option value="<?php echo htmlspecialchars($service['id']); ?>">
-                                <?php echo htmlspecialchars($service['name'] ?? 'Service') . ' - ₱' . number_format($service['price'] ?? 0, 2); ?>
-                            </option>
-                        <?php 
-                                endif;
-                            endwhile; 
-                        endif; 
-                        ?>
-                    </select>
-                </div>
-
-                <div class="form-group">
-                    <label for="vehicle_model">Vehicle Model</label>
-                    <input type="text" name="vehicle_model" id="vehicle_model" placeholder="e.g., Honda Civic (ABC 1234)" required>
-                </div>
-
-                <div class="form-group">
-                    <label for="booking_date">Booking Date</label>
-                    <input type="date" name="booking_date" id="booking_date" required>
-                </div>
-
-                <div class="form-group">
-                    <label for="booking_time">Booking Time</label>
-                    <input type="time" name="booking_time" id="booking_time" required>
-                </div>
-
-                <div class="form-actions">
-                    <button type="button" class="btn-secondary" onclick="closeAddModal()">Cancel</button>
-                    <button type="submit" class="btn-primary">Add Booking</button>
-                </div>
-            </form>
-        </div>
-    </div>
-
-    <!-- Update Status Modal -->
-    <div class="modal" id="statusModal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h2 class="modal-title">Update Booking Status</h2>
-                <button class="close-btn" onclick="closeStatusModal()">&times;</button>
-            </div>
-            <form method="POST" action="">
-                <input type="hidden" name="action" value="update_status">
-                <input type="hidden" name="booking_id" id="status_booking_id">
-                
-                <div class="form-group">
-                    <label for="status">Status</label>
-                    <select name="status" id="status" required>
-                        <option value="pending">Pending</option>
-                        <option value="confirmed">Confirmed</option>
-                        <option value="completed">Completed</option>
-                        <option value="cancelled">Cancelled</option>
-                    </select>
-                </div>
-
-                <div class="form-actions">
-                    <button type="button" class="btn-secondary" onclick="closeStatusModal()">Cancel</button>
-                    <button type="submit" class="btn-primary">Update Status</button>
-                </div>
-            </form>
-        </div>
-    </div>
-
+    <!-- Notification Container -->
     <div class="notification" id="notification">
+        <span id="notificationIcon"></span>
         <span id="notificationText"></span>
     </div>
 
     <script>
-        function openAddModal() {
-            document.getElementById('addModal').classList.add('active');
-        }
-
-        function closeAddModal() {
-            document.getElementById('addModal').classList.remove('active');
-        }
-
-        function openStatusModal(bookingId, currentStatus) {
-            document.getElementById('status_booking_id').value = bookingId;
-            document.getElementById('status').value = currentStatus;
-            document.getElementById('statusModal').classList.add('active');
-        }
-
-        function closeStatusModal() {
-            document.getElementById('statusModal').classList.remove('active');
-        }
-
-        function deleteBooking(bookingId) {
-            if (confirm('Are you sure you want to delete this booking? This action cannot be undone.')) {
-                const form = document.createElement('form');
-                form.method = 'POST';
-                form.innerHTML = `
-                    <input type="hidden" name="action" value="delete_booking">
-                    <input type="hidden" name="booking_id" value="${bookingId}">
-                `;
-                document.body.appendChild(form);
-                form.submit();
-            }
-        }
-
-        function filterTable() {
-            const searchValue = document.getElementById('searchInput').value.toLowerCase();
-            const statusValue = document.getElementById('statusFilter').value.toLowerCase();
-            const table = document.getElementById('bookingsTable');
-            const rows = table.getElementsByTagName('tr');
-
-            for (let i = 1; i < rows.length; i++) {
-                const row = rows[i];
-                const text = row.textContent.toLowerCase();
-                const statusCell = row.cells[7];
-                const status = statusCell ? statusCell.textContent.toLowerCase() : '';
-
-                const matchesSearch = text.includes(searchValue);
-                const matchesStatus = !statusValue || status.includes(statusValue);
-
-                row.style.display = matchesSearch && matchesStatus ? '' : 'none';
-            }
-        }
-
-        function showNotification(message) {
+        // Notification Function
+        function showNotification(message, type = 'success', duration = 4000) {
             const notification = document.getElementById('notification');
             const notificationText = document.getElementById('notificationText');
+            const notificationIcon = document.getElementById('notificationIcon');
             
-            notification.className = 'notification active';
+            const icons = {
+                success: '✓',
+                danger: '✕',
+                warning: '⚠',
+                info: 'ℹ'
+            };
+            
+            notification.className = `notification ${type} active`;
+            notificationIcon.textContent = icons[type] || 'ℹ';
             notificationText.textContent = message;
             
             setTimeout(() => {
                 notification.classList.remove('active');
-            }, 4000);
+            }, duration);
         }
 
-        // Sync with localStorage (User and Employee dashboards)
-        function syncWithLocalStorage() {
-            showNotification('Syncing with user and employee dashboards...');
-            
-            // Fetch current bookings from server
-            fetch('?action=get_bookings_json')
+        // Edit Booking
+        function editBooking(bookingId) {
+            showNotification('Opening booking editor...', 'info');
+            setTimeout(() => {
+                window.location.href = `edit_booking.php?id=${bookingId}`;
+            }, 800);
+        }
+
+        // Delete Booking
+        function deleteBooking(bookingId, customerName) {
+            if (confirm(`Are you sure you want to delete the booking for ${customerName}?\n\nThis action cannot be undone.`)) {
+                showNotification(`Deleting booking...`, 'warning');
+                
+                const formData = new FormData();
+                formData.append('action', 'delete_booking');
+                formData.append('booking_id', bookingId);
+                
+                fetch('booking_actions.php', {
+                    method: 'POST',
+                    body: formData
+                })
                 .then(response => response.json())
-                .then(bookings => {
-                    // Store in localStorage for user and employee dashboards
-                    localStorage.setItem('smartwash_bookings', JSON.stringify(bookings));
-                    
-                    showNotification(`Successfully synced ${bookings.length} bookings!`);
-                    
-                    // Update stats
-                    updateStats(bookings);
+                .then(data => {
+                    if (data.success) {
+                        showNotification(data.message || 'Booking deleted successfully!', 'success');
+                        setTimeout(() => location.reload(), 1500);
+                    } else {
+                        showNotification(data.message || 'Failed to delete booking', 'danger');
+                    }
                 })
                 .catch(error => {
-                    showNotification('Error syncing bookings: ' + error.message);
+                    console.error('Error:', error);
+                    showNotification('An error occurred while deleting the booking', 'danger');
                 });
-        }
-
-        function updateStats(bookings) {
-            const total = bookings.length;
-            const pending = bookings.filter(b => b.status.toLowerCase() === 'pending').length;
-            const confirmed = bookings.filter(b => b.status.toLowerCase() === 'confirmed').length;
-            const completed = bookings.filter(b => b.status.toLowerCase() === 'completed').length;
-            const cancelled = bookings.filter(b => b.status.toLowerCase() === 'cancelled').length;
-            
-            const today = new Date().toISOString().split('T')[0];
-            const todayBookings = bookings.filter(b => b.rawDate === today).length;
-            
-            document.getElementById('totalCount').textContent = total;
-            document.getElementById('pendingCount').textContent = pending;
-            document.getElementById('confirmedCount').textContent = confirmed;
-            document.getElementById('completedCount').textContent = completed;
-            document.getElementById('cancelledCount').textContent = cancelled;
-            document.getElementById('todayCount').textContent = todayBookings;
-        }
-
-        // Load bookings from localStorage and push to database
-        function loadFromLocalStorage() {
-            const storedBookings = JSON.parse(localStorage.getItem('smartwash_bookings') || '[]');
-            
-            if (storedBookings.length > 0) {
-                showNotification(`Found ${storedBookings.length} bookings in local storage`);
             }
         }
 
-        // Auto-sync every 5 seconds
-        setInterval(() => {
-            syncWithLocalStorage();
-        }, 5000);
+        // Filter functionality
+        document.getElementById('searchInput').addEventListener('input', filterTable);
+        document.getElementById('statusFilter').addEventListener('change', filterTable);
+        document.getElementById('dateFilter').addEventListener('change', filterTable);
 
-        // Close modals when clicking outside
-        window.onclick = function(event) {
-            if (event.target.classList.contains('modal')) {
-                event.target.classList.remove('active');
-            }
+        function filterTable() {
+            const searchValue = document.getElementById('searchInput').value.toLowerCase();
+            const statusValue = document.getElementById('statusFilter').value.toLowerCase();
+            const dateValue = document.getElementById('dateFilter').value;
+            
+            const rows = document.querySelectorAll('#bookingsTable tbody tr');
+            
+            rows.forEach(row => {
+                const customerCell = row.cells[1]?.textContent.toLowerCase() || '';
+                const statusCell = row.cells[6]?.textContent.toLowerCase() || '';
+                const dateCell = row.cells[4]?.textContent || '';
+                
+                const matchesSearch = customerCell.includes(searchValue);
+                const matchesStatus = !statusValue || statusCell.includes(statusValue);
+                const matchesDate = !dateValue || dateCell.includes(formatDate(dateValue));
+                
+                if (matchesSearch && matchesStatus && matchesDate) {
+                    row.style.display = '';
+                } else {
+                    row.style.display = 'none';
+                }
+            });
         }
 
-        // Set minimum date to today
-        document.addEventListener('DOMContentLoaded', function() {
-            const dateInput = document.getElementById('booking_date');
-            const today = new Date().toISOString().split('T')[0];
-            dateInput.setAttribute('min', today);
-            
-            // Initial sync
-            syncWithLocalStorage();
-            
-            // Load from localStorage
-            loadFromLocalStorage();
-        });
+        function formatDate(dateString) {
+            const date = new Date(dateString);
+            const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            return `${months[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`;
+        }
     </script>
 </body>
 </html>

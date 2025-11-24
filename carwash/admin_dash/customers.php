@@ -1,4 +1,12 @@
 <?php
+session_set_cookie_params([
+    'lifetime' => 60 * 60 * 24 * 7,
+    'path' => '/',
+    'domain' => '',
+    'secure' => false,
+    'httponly' => true,
+    'samesite' => 'Lax'
+]);
 session_start();
 
 // Check if user is logged in and is admin

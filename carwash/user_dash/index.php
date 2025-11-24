@@ -1,3 +1,128 @@
+<?php
+session_set_cookie_params([
+    'lifetime' => 60 * 60 * 24 * 7,
+    'path' => '/',
+    'domain' => '',
+    'secure' => false,
+    'httponly' => true,
+    'samesite' => 'Lax'
+]);
+session_start();
+
+// Check if user is logged in
+if (!isset($_SESSION['userEmail']) || $_SESSION['userRole'] !== 'customer') {
+    header('Location: ../landing/login/login.php');
+    exit;
+}
+
+// Include database connection
+include __DIR__ . '/../database/database.php';
+
+// Get user information
+$userEmail = $_SESSION['userEmail'];
+$userId = $_SESSION['userId'] ?? null;
+
+// Find user in customers table
+$userQuery = "SELECT c.*, u.email, u.first_name, u.last_name 
+              FROM customers c 
+              LEFT JOIN users u ON c.user_id = u.user_id 
+              WHERE u.email = ? LIMIT 1";
+$userStmt = $conn->prepare($userQuery);
+$userStmt->bind_param("s", $userEmail);
+$userStmt->execute();
+$userResult = $userStmt->get_result();
+$userData = $userResult->fetch_assoc();
+
+if (!$userData) {
+    // Try to find in users table only
+    $userQuery2 = "SELECT user_id, email, first_name, last_name FROM users WHERE email = ? LIMIT 1";
+    $userStmt2 = $conn->prepare($userQuery2);
+    $userStmt2->bind_param("s", $userEmail);
+    $userStmt2->execute();
+    $userResult2 = $userStmt2->get_result();
+    $userDataOnly = $userResult2->fetch_assoc();
+    
+    if ($userDataOnly) {
+        $_SESSION['userId'] = $userDataOnly['user_id'];
+        $userId = $userDataOnly['user_id'];
+        $userName = trim(($userDataOnly['first_name'] ?? '') . ' ' . ($userDataOnly['last_name'] ?? ''));
+        $loyaltyPoints = 0;
+        $membershipTier = 'Bronze';
+        $totalSpent = 0;
+        $customerId = null;
+    } else {
+        session_destroy();
+        header('Location: ../landing/login/login.php');
+        exit;
+    }
+} else {
+    $userId = $userData['user_id'];
+    $customerId = $userData['customer_id'];
+    $_SESSION['userId'] = $userId;
+    $userName = trim(($userData['first_name'] ?? '') . ' ' . ($userData['last_name'] ?? ''));
+    if (empty($userName)) {
+        $userName = $userData['name'] ?? 'User';
+    }
+    $loyaltyPoints = $userData['loyalty_points'] ?? 0;
+    $membershipTier = $userData['membership_tier'] ?? 'Bronze';
+    $totalSpent = $userData['total_spent'] ?? 0;
+}
+
+// Get user's vehicles
+$vehiclesQuery = "SELECT * FROM vehicles WHERE customer_id = ? ORDER BY vehicle_id DESC";
+$vehiclesStmt = $conn->prepare($vehiclesQuery);
+$vehiclesStmt->bind_param("i", $customerId);
+$vehiclesStmt->execute();
+$vehiclesResult = $vehiclesStmt->get_result();
+$vehicles = [];
+while ($row = $vehiclesResult->fetch_assoc()) {
+    $vehicles[] = $row;
+}
+
+// Get user's bookings
+$bookingsQuery = "SELECT b.*, s.service_name, s.base_price, v.make, v.model, v.plate_number
+                  FROM bookings b
+                  LEFT JOIN services s ON b.service_id = s.service_id
+                  LEFT JOIN vehicles v ON b.vehicle_id = v.vehicle_id
+                  WHERE b.customer_id = ?
+                  ORDER BY b.booking_date DESC, b.booking_time DESC
+                  LIMIT 20";
+$bookingsStmt = $conn->prepare($bookingsQuery);
+$bookingsStmt->bind_param("i", $customerId);
+$bookingsStmt->execute();
+$bookingsResult = $bookingsStmt->get_result();
+$bookings = [];
+while ($row = $bookingsResult->fetch_assoc()) {
+    $bookings[] = $row;
+}
+
+// Calculate statistics
+$totalWashes = count(array_filter($bookings, function($b) { 
+    return $b['status'] === 'Completed'; 
+}));
+$upcomingBookings = count(array_filter($bookings, function($b) { 
+    return in_array($b['status'], ['Pending', 'Confirmed']); 
+}));
+
+// Get services for booking form
+$servicesQuery = "SELECT * FROM services WHERE is_active = 1 ORDER BY base_price";
+$servicesResult = $conn->query($servicesQuery);
+$services = [];
+while ($row = $servicesResult->fetch_assoc()) {
+    $services[] = $row;
+}
+
+// Find next upcoming booking
+$nextBooking = null;
+foreach ($bookings as $booking) {
+    if (in_array($booking['status'], ['Pending', 'Confirmed'])) {
+        $nextBooking = $booking;
+        break;
+    }
+}
+
+$conn->close();
+?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -54,7 +179,6 @@
             justify-content: center;
             color: white;
             font-size: 1.5rem;
-            cursor: pointer;
         }
 
         .logout-btn {
@@ -173,10 +297,6 @@
             box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
         }
 
-        .booking-history {
-            margin-top: 1rem;
-        }
-
         .booking-item {
             display: flex;
             justify-content: space-between;
@@ -218,7 +338,7 @@
             color: #856404;
         }
 
-        .status-in-progress {
+        .status-confirmed {
             background: #cce5ff;
             color: #004085;
         }
@@ -248,22 +368,6 @@
             margin: 1rem 0;
         }
 
-        .progress-bar {
-            background: rgba(255, 255, 255, 0.3);
-            height: 10px;
-            border-radius: 5px;
-            overflow: hidden;
-            margin-top: 1rem;
-        }
-
-        .progress-fill {
-            background: white;
-            height: 100%;
-            width: 65%;
-            border-radius: 5px;
-            transition: width 0.5s ease;
-        }
-
         .quick-actions {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -289,10 +393,6 @@
             transform: translateY(-3px);
         }
 
-        .vehicle-list {
-            margin-top: 1rem;
-        }
-
         .vehicle-item {
             display: flex;
             align-items: center;
@@ -301,26 +401,10 @@
             background: #f8f9fa;
             border-radius: 10px;
             margin-bottom: 1rem;
-            transition: all 0.3s ease;
-        }
-
-        .vehicle-item:hover {
-            background: #e9ecef;
-            transform: translateX(5px);
         }
 
         .vehicle-icon {
             font-size: 2rem;
-        }
-
-        .vehicle-details h4 {
-            font-size: 1rem;
-            margin-bottom: 0.2rem;
-        }
-
-        .vehicle-details p {
-            font-size: 0.85rem;
-            color: #666;
         }
 
         .modal {
@@ -361,11 +445,6 @@
             font-size: 1.5rem;
             cursor: pointer;
             color: #666;
-            transition: color 0.3s ease;
-        }
-
-        .close-btn:hover {
-            color: #333;
         }
 
         .form-group {
@@ -386,7 +465,6 @@
             border: 2px solid #e0e0e0;
             border-radius: 10px;
             font-size: 1rem;
-            transition: border-color 0.3s ease;
         }
 
         .form-group input:focus,
@@ -395,61 +473,9 @@
             border-color: #667eea;
         }
 
-        .notification {
-            position: fixed;
-            top: 80px;
-            right: 20px;
-            background: white;
-            padding: 1rem 1.5rem;
-            border-radius: 10px;
-            box-shadow: 0 5px 20px rgba(0, 0, 0, 0.2);
-            display: flex;
-            align-items: center;
-            gap: 1rem;
-            z-index: 1001;
-            animation: slideIn 0.3s ease;
-        }
-
-        @keyframes slideIn {
-            from {
-                transform: translateX(400px);
-                opacity: 0;
-            }
-            to {
-                transform: translateX(0);
-                opacity: 1;
-            }
-        }
-
-        .notification.success {
-            border-left: 4px solid #28a745;
-        }
-
-        .notification.info {
-            border-left: 4px solid #17a2b8;
-        }
-
         @media (max-width: 1024px) {
             .dashboard-grid {
                 grid-template-columns: 1fr;
-            }
-        }
-
-        @media (max-width: 768px) {
-            .stats-grid {
-                grid-template-columns: 1fr;
-            }
-
-            .quick-actions {
-                grid-template-columns: 1fr;
-            }
-
-            .navbar {
-                padding: 1rem;
-            }
-
-            .user-info span {
-                display: none;
             }
         }
     </style>
@@ -458,7 +484,7 @@
     <nav class="navbar">
         <div class="logo">SmartWash</div>
         <div class="user-info">
-            <span>User</span>
+            <span><?php echo htmlspecialchars($userName); ?></span>
             <div class="user-avatar">👤</div>
             <button class="logout-btn" onclick="window.location.href='../landing/logout.php'">Logout</button>
         </div>
@@ -466,29 +492,35 @@
 
     <div class="container">
         <div class="welcome-section">
-            <h1>Welcome back, User! 👋</h1>
-            <p id="nextBooking">Your next wash is scheduled for October 28, 2025 at 10:00 AM</p>
+            <h1>Welcome back, <?php echo htmlspecialchars($userName); ?>! 👋</h1>
+            <p>
+                <?php if ($nextBooking): ?>
+                    Your next wash is scheduled for <?php echo date('F d, Y', strtotime($nextBooking['booking_date'])); ?> at <?php echo date('g:i A', strtotime($nextBooking['booking_time'])); ?>
+                <?php else: ?>
+                    You have no upcoming bookings. Book your next wash today!
+                <?php endif; ?>
+            </p>
         </div>
 
         <div class="stats-grid">
             <div class="stat-card">
                 <div class="stat-icon">🚗</div>
-                <div class="stat-value" id="totalWashes">12</div>
+                <div class="stat-value"><?php echo $totalWashes; ?></div>
                 <div class="stat-label">Total Washes</div>
             </div>
             <div class="stat-card">
                 <div class="stat-icon">⭐</div>
-                <div class="stat-value">850</div>
+                <div class="stat-value"><?php echo $loyaltyPoints; ?></div>
                 <div class="stat-label">Loyalty Points</div>
             </div>
             <div class="stat-card">
                 <div class="stat-icon">💰</div>
-                <div class="stat-value">₱350</div>
-                <div class="stat-label">Total Savings</div>
+                <div class="stat-value">₱<?php echo number_format($totalSpent, 0); ?></div>
+                <div class="stat-label">Total Spent</div>
             </div>
             <div class="stat-card">
                 <div class="stat-icon">📅</div>
-                <div class="stat-value" id="upcomingCount">1</div>
+                <div class="stat-value"><?php echo $upcomingBookings; ?></div>
                 <div class="stat-label">Upcoming Bookings</div>
             </div>
         </div>
@@ -499,26 +531,36 @@
                     <h2 class="card-title">Booking History</h2>
                     <button class="btn-primary" onclick="openBookingModal()">New Booking</button>
                 </div>
-                <div class="booking-history" id="bookingHistory">
-                    <!-- Bookings will be populated here -->
+                <div class="booking-history">
+                    <?php if (empty($bookings)): ?>
+                        <p style="text-align: center; color: #666; padding: 2rem;">No bookings yet. Book your first wash!</p>
+                    <?php else: ?>
+                        <?php foreach ($bookings as $booking): ?>
+                            <div class="booking-item">
+                                <div class="booking-info">
+                                    <h4><?php echo htmlspecialchars($booking['service_name'] ?? 'Car Wash'); ?></h4>
+                                    <p><?php echo date('F d, Y', strtotime($booking['booking_date'])); ?> - <?php echo htmlspecialchars($booking['make'] . ' ' . $booking['model']); ?></p>
+                                </div>
+                                <span class="booking-status status-<?php echo strtolower($booking['status']); ?>">
+                                    <?php echo ucfirst($booking['status']); ?>
+                                </span>
+                            </div>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
                 </div>
             </div>
 
             <div>
                 <div class="card">
                     <div class="membership-card">
-                        <div class="membership-tier">🏆 Gold Member</div>
+                        <div class="membership-tier">🏆 <?php echo $membershipTier; ?> Member</div>
                         <p>You're doing great!</p>
-                        <div class="points-display">850 pts</div>
-                        <p style="font-size: 0.9rem;">150 points to Platinum</p>
-                        <div class="progress-bar">
-                            <div class="progress-fill"></div>
-                        </div>
+                        <div class="points-display"><?php echo $loyaltyPoints; ?> pts</div>
                     </div>
                     <div class="quick-actions">
                         <button class="quick-action-btn" onclick="openBookingModal()">📅 Book Now</button>
-                        <button class="quick-action-btn" onclick="alert('Viewing rewards...')">🎁 Rewards</button>
-                        <button class="quick-action-btn" onclick="alert('Viewing history...')">📊 History</button>
+                        <button class="quick-action-btn" onclick="alert('Rewards coming soon!')">🎁 Rewards</button>
+                        <button class="quick-action-btn" onclick="alert('History displayed above')">📊 History</button>
                         <button class="quick-action-btn" onclick="window.location.href='./support/chat.php'">💬 Support</button>
                     </div>
                 </div>
@@ -528,8 +570,20 @@
                         <h2 class="card-title">My Vehicles</h2>
                         <button class="btn-primary" onclick="openVehicleModal()">+ Add</button>
                     </div>
-                    <div class="vehicle-list" id="vehicleList">
-                        <!-- Vehicles will be populated here -->
+                    <div class="vehicle-list">
+                        <?php if (empty($vehicles)): ?>
+                            <p style="text-align: center; color: #666; padding: 1rem;">No vehicles added yet</p>
+                        <?php else: ?>
+                            <?php foreach ($vehicles as $vehicle): ?>
+                                <div class="vehicle-item">
+                                    <div class="vehicle-icon">🚗</div>
+                                    <div>
+                                        <h4><?php echo htmlspecialchars($vehicle['make'] . ' ' . $vehicle['model']); ?></h4>
+                                        <p><?php echo htmlspecialchars($vehicle['plate_number']); ?> • <?php echo htmlspecialchars($vehicle['vehicle_type']); ?></p>
+                                    </div>
+                                </div>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
                     </div>
                 </div>
             </div>
@@ -543,29 +597,36 @@
                 <h2 class="card-title">New Booking</h2>
                 <span class="close-btn" onclick="closeBookingModal()">✕</span>
             </div>
-            <form onsubmit="handleBooking(event)">
+            <form action="create_booking.php" method="POST">
                 <div class="form-group">
                     <label for="vehicle">Select Vehicle</label>
-                    <select id="vehicle" required>
+                    <select name="vehicle_id" id="vehicle" required>
                         <option value="">Choose a vehicle</option>
+                        <?php foreach ($vehicles as $vehicle): ?>
+                            <option value="<?php echo $vehicle['vehicle_id']; ?>">
+                                <?php echo htmlspecialchars($vehicle['make'] . ' ' . $vehicle['model'] . ' (' . $vehicle['plate_number'] . ')'); ?>
+                            </option>
+                        <?php endforeach; ?>
                     </select>
                 </div>
                 <div class="form-group">
                     <label for="service">Select Service</label>
-                    <select id="service" required>
+                    <select name="service_type" id="service" required>
                         <option value="">Choose a service</option>
-                        <option value="basic">Basic Wash - ₱250</option>
-                        <option value="premium">Premium Wash - ₱450</option>
-                        <option value="ultimate">Ultimate Wash - ₱750</option>
+                        <?php foreach ($services as $service): ?>
+                            <option value="<?php echo strtolower(str_replace(' ', '_', $service['service_type'])); ?>">
+                                <?php echo htmlspecialchars($service['service_name']); ?> - ₱<?php echo number_format($service['base_price'], 0); ?>
+                            </option>
+                        <?php endforeach; ?>
                     </select>
                 </div>
                 <div class="form-group">
                     <label for="date">Date</label>
-                    <input type="date" id="date" required>
+                    <input type="date" name="booking_date" id="date" min="<?php echo date('Y-m-d'); ?>" required>
                 </div>
                 <div class="form-group">
                     <label for="time">Time</label>
-                    <input type="time" id="time" required>
+                    <input type="time" name="booking_time" id="time" required>
                 </div>
                 <button type="submit" class="btn-primary" style="width: 100%; padding: 1rem;">Confirm Booking</button>
             </form>
@@ -579,32 +640,33 @@
                 <h2 class="card-title">Add Vehicle</h2>
                 <span class="close-btn" onclick="closeVehicleModal()">✕</span>
             </div>
-            <form onsubmit="handleAddVehicle(event)">
+            <form action="add_vehicle_form.php" method="POST">
                 <div class="form-group">
                     <label for="make">Make</label>
-                    <input type="text" id="make" placeholder="e.g., Honda" required>
+                    <input type="text" name="make" id="make" placeholder="e.g., Honda" required>
                 </div>
                 <div class="form-group">
                     <label for="model">Model</label>
-                    <input type="text" id="model" placeholder="e.g., Civic" required>
+                    <input type="text" name="model" id="model" placeholder="e.g., Civic" required>
                 </div>
                 <div class="form-group">
                     <label for="plate">Plate Number</label>
-                    <input type="text" id="plate" placeholder="e.g., ABC 1234" required>
+                    <input type="text" name="plate_number" id="plate" placeholder="e.g., ABC 1234" required>
                 </div>
                 <div class="form-group">
                     <label for="type">Vehicle Type</label>
-                    <select id="type" required>
+                    <select name="vehicle_type" id="type" required>
                         <option value="">Select type</option>
-                        <option value="sedan">Sedan</option>
-                        <option value="suv">SUV</option>
-                        <option value="truck">Truck</option>
-                        <option value="van">Van</option>
+                        <option value="Sedan">Sedan</option>
+                        <option value="SUV">SUV</option>
+                        <option value="Truck">Truck</option>
+                        <option value="Van">Van</option>
+                        <option value="Motorcycle">Motorcycle</option>
                     </select>
                 </div>
                 <div class="form-group">
                     <label for="color">Color</label>
-                    <input type="text" id="color" placeholder="e.g., White" required>
+                    <input type="text" name="color" id="color" placeholder="e.g., White" required>
                 </div>
                 <button type="submit" class="btn-primary" style="width: 100%; padding: 1rem;">Add Vehicle</button>
             </form>
@@ -612,101 +674,13 @@
     </div>
 
     <script>
-        // Simulated storage (in production, this would be a database)
-        let vehicles = JSON.parse(localStorage.getItem('smartwash_vehicles')) || [
-            { id: 'civic', make: 'Honda', model: 'Civic', plate: 'ABC 1234', type: 'Sedan', color: 'White' }
-        ];
-
-        let bookings = JSON.parse(localStorage.getItem('smartwash_bookings')) || [
-            { id: 1, service: 'Premium Wash', date: 'October 20, 2025', vehicle: 'Honda Civic (ABC 1234)', status: 'Completed', time: '10:00 AM' },
-            { id: 2, service: 'Ultimate Wash', date: 'October 28, 2025', vehicle: 'Honda Civic (ABC 1234)', status: 'Upcoming', time: '10:00 AM' },
-            { id: 3, service: 'Basic Wash', date: 'October 15, 2025', vehicle: 'Honda Civic (ABC 1234)', status: 'Completed', time: '02:00 PM' },
-            { id: 4, service: 'Premium Wash', date: 'October 10, 2025', vehicle: 'Honda Civic (ABC 1234)', status: 'Completed', time: '11:00 AM' }
-        ];
-
-        // Save to storage
-        function saveData() {
-            localStorage.setItem('smartwash_vehicles', JSON.stringify(vehicles));
-            localStorage.setItem('smartwash_bookings', JSON.stringify(bookings));
-        }
-
-        // Show notification
-        function showNotification(message, type = 'success') {
-            const notification = document.createElement('div');
-            notification.className = `notification ${type}`;
-            notification.innerHTML = `
-                <span style="font-size: 1.5rem;">${type === 'success' ? '✓' : 'ℹ'}</span>
-                <span>${message}</span>
-            `;
-            document.body.appendChild(notification);
-            
-            setTimeout(() => {
-                notification.remove();
-            }, 4000);
-        }
-
-        // Update booking history display
-        function updateBookingHistory() {
-            const bookingHistory = document.getElementById('bookingHistory');
-            bookingHistory.innerHTML = '';
-            
-            bookings.forEach(booking => {
-                const bookingItem = document.createElement('div');
-                bookingItem.className = 'booking-item';
-                
-                let statusClass = 'status-pending';
-                if (booking.status === 'Completed') statusClass = 'status-completed';
-                if (booking.status === 'In Progress') statusClass = 'status-in-progress';
-                if (booking.status === 'Cancelled') statusClass = 'status-cancelled';
-                
-                bookingItem.innerHTML = `
-                    <div class="booking-info">
-                        <h4>${booking.service}</h4>
-                        <p>${booking.date} - ${booking.vehicle}</p>
-                    </div>
-                    <span class="booking-status ${statusClass}">${booking.status}</span>
-                `;
-                bookingHistory.appendChild(bookingItem);
-            });
-        }
-
-        // Update vehicle list display
-        function updateVehicleList() {
-            const vehicleList = document.getElementById('vehicleList');
-            vehicleList.innerHTML = '';
-            
-            vehicles.forEach(vehicle => {
-                const vehicleItem = document.createElement('div');
-                vehicleItem.className = 'vehicle-item';
-                vehicleItem.innerHTML = `
-                    <div class="vehicle-icon">🚗</div>
-                    <div class="vehicle-details">
-                        <h4>${vehicle.make} ${vehicle.model}</h4>
-                        <p>${vehicle.plate} • ${vehicle.type} • ${vehicle.color}</p>
-                    </div>
-                `;
-                vehicleList.appendChild(vehicleItem);
-            });
-        }
-
-        // Update vehicle dropdown in booking modal
-        function updateVehicleDropdown() {
-            const vehicleSelect = document.getElementById('vehicle');
-            vehicleSelect.innerHTML = '<option value="">Choose a vehicle</option>';
-            
-            vehicles.forEach(vehicle => {
-                const option = document.createElement('option');
-                option.value = vehicle.id;
-                option.textContent = `${vehicle.make} ${vehicle.model} (${vehicle.plate})`;
-                vehicleSelect.appendChild(option);
-            });
-        }
-
         function openBookingModal() {
-            updateVehicleDropdown();
+            <?php if (empty($vehicles)): ?>
+                alert('Please add a vehicle first before booking!');
+                openVehicleModal();
+                return;
+            <?php endif; ?>
             document.getElementById('bookingModal').classList.add('active');
-            const today = new Date().toISOString().split('T')[0];
-            document.getElementById('date').setAttribute('min', today);
         }
 
         function closeBookingModal() {
@@ -721,117 +695,6 @@
             document.getElementById('vehicleModal').classList.remove('active');
         }
 
-        function handleBooking(event) {
-            event.preventDefault();
-            
-            const vehicleId = document.getElementById('vehicle').value;
-            const serviceId = document.getElementById('service').value;
-            const date = document.getElementById('date').value;
-            const time = document.getElementById('time').value;
-            
-            const selectedVehicle = vehicles.find(v => v.id === vehicleId);
-            
-            const serviceMap = {
-                'basic': { name: 'Basic Wash', price: 250 },
-                'premium': { name: 'Premium Wash', price: 450 },
-                'ultimate': { name: 'Ultimate Wash', price: 750 }
-            };
-            const service = serviceMap[serviceId];
-            
-            const bookingDate = new Date(date);
-            const formattedDate = bookingDate.toLocaleDateString('en-US', { 
-                year: 'numeric', 
-                month: 'long', 
-                day: 'numeric' 
-            });
-            
-            const newBooking = {
-                id: Date.now(),
-                service: service.name,
-                date: formattedDate,
-                vehicle: `${selectedVehicle.make} ${selectedVehicle.model} (${selectedVehicle.plate})`,
-                status: 'Upcoming',
-                price: service.price,
-                time: time,
-                rawDate: date
-            };
-            
-            bookings.unshift(newBooking);
-            saveData();
-            updateBookingHistory();
-            
-            const upcomingCount = bookings.filter(b => b.status === 'Upcoming').length;
-            document.getElementById('upcomingCount').textContent = upcomingCount;
-            
-            showNotification(`Booking confirmed! ${service.name} on ${formattedDate} at ${time}`);
-            
-            event.target.reset();
-            closeBookingModal();
-        }
-
-        function handleAddVehicle(event) {
-            event.preventDefault();
-            
-            const make = document.getElementById('make').value;
-            const model = document.getElementById('model').value;
-            const plate = document.getElementById('plate').value;
-            const type = document.getElementById('type').value;
-            const color = document.getElementById('color').value;
-            
-            const newVehicle = {
-                id: plate.replace(/\s+/g, '_').toLowerCase(),
-                make: make,
-                model: model,
-                plate: plate,
-                type: type,
-                color: color
-            };
-            
-            vehicles.push(newVehicle);
-            saveData();
-            updateVehicleList();
-            updateVehicleDropdown();
-            
-            showNotification(`Vehicle added: ${make} ${model} (${plate})`);
-            
-            event.target.reset();
-            closeVehicleModal();
-        }
-
-        function logout() {
-            if (confirm('Are you sure you want to logout?')) {
-                window.location.href = 'index.html';
-            }
-        }
-
-        // Check for booking status updates
-        function checkForUpdates() {
-            const updatedBookings = JSON.parse(localStorage.getItem('smartwash_bookings')) || [];
-            
-            updatedBookings.forEach((updatedBooking, index) => {
-                const existingBooking = bookings.find(b => b.id === updatedBooking.id);
-                
-                if (existingBooking && existingBooking.status !== updatedBooking.status) {
-                    if (updatedBooking.status === 'In Progress') {
-                        showNotification(`Your ${updatedBooking.service} is now in progress! 🚗`, 'info');
-                    } else if (updatedBooking.status === 'Completed') {
-                        showNotification(`Your ${updatedBooking.service} has been completed! ✓`, 'success');
-                        document.getElementById('totalWashes').textContent = 
-                            parseInt(document.getElementById('totalWashes').textContent) + 1;
-                    }
-                    
-                    existingBooking.status = updatedBooking.status;
-                }
-            });
-            
-            bookings = updatedBookings;
-            updateBookingHistory();
-            
-            const upcomingCount = bookings.filter(b => b.status === 'Upcoming').length;
-            document.getElementById('upcomingCount').textContent = upcomingCount;
-        }
-
-        // Close modal when clicking outside
         window.onclick = function(event) {
             const bookingModal = document.getElementById('bookingModal');
             const vehicleModal = document.getElementById('vehicleModal');
@@ -843,14 +706,16 @@
             }
         }
 
-        // Initialize
-        document.addEventListener('DOMContentLoaded', function() {
-            updateBookingHistory();
-            updateVehicleList();
-            
-            // Check for updates every 3 seconds
-            setInterval(checkForUpdates, 3000);
-        });
+        // Show success/error messages
+        <?php if (isset($_SESSION['success'])): ?>
+            alert('<?php echo $_SESSION['success']; ?>');
+            <?php unset($_SESSION['success']); ?>
+        <?php endif; ?>
+        
+        <?php if (isset($_SESSION['error'])): ?>
+            alert('<?php echo $_SESSION['error']; ?>');
+            <?php unset($_SESSION['error']); ?>
+        <?php endif; ?>
     </script>
 </body>
 </html>

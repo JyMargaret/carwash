@@ -1,3 +1,231 @@
+<?php
+session_set_cookie_params([
+    'lifetime' => 60 * 60 * 24 * 7,
+    'path' => '/',
+    'domain' => '',
+    'secure' => false,
+    'httponly' => true,
+    'samesite' => 'Lax'
+]);
+session_start();
+
+// Check if user is logged in and is employee
+if (!isset($_SESSION['userEmail']) || $_SESSION['userRole'] !== 'employee') {
+    header('Location: ../landing/login/login.php');
+    exit;
+}
+
+// Include database connection
+$dbPath = __DIR__ . '/../database/database.php';
+if (file_exists($dbPath)) {
+    include $dbPath;
+    if (!isset($conn) || !$conn || $conn->connect_error) {
+        die("Database connection failed. Please check your database.php file.");
+    }
+} else {
+    die("Database configuration file not found.");
+}
+
+// Get employee information
+$employeeEmail = $_SESSION['userEmail'];
+$employeeName = $_SESSION['userName'] ?? 'Employee';
+
+// Get database name
+$dbNameQuery = "SELECT DATABASE() AS dbname";
+$dbNameResult = $conn->query($dbNameQuery);
+$dbName = $dbNameResult ? $dbNameResult->fetch_assoc()['dbname'] : 'smartwash_db';
+
+// Detect column names for services table
+$serviceNameCol = 'service_name';
+$servicePriceCol = 'price';
+$serviceCols = $conn->query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = '$dbName' AND TABLE_NAME = 'services'");
+if ($serviceCols && $serviceCols->num_rows > 0) {
+    while ($col = $serviceCols->fetch_assoc()) {
+        $colName = $col['COLUMN_NAME'];
+        $lower = strtolower($colName);
+        if (in_array($lower, ['name', 'service_name'])) {
+            $serviceNameCol = $colName;
+        }
+        if (in_array($lower, ['price', 'base_price'])) {
+            $servicePriceCol = $colName;
+        }
+    }
+}
+
+// Detect column names for customers table
+$customerNameCol = 'name';
+$customerCols = $conn->query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = '$dbName' AND TABLE_NAME = 'customers'");
+if ($customerCols && $customerCols->num_rows > 0) {
+    $cols = [];
+    while ($col = $customerCols->fetch_assoc()) {
+        $cols[] = $col['COLUMN_NAME'];
+    }
+    
+    if (in_array('name', $cols)) {
+        $customerNameCol = 'name';
+    } elseif (in_array('full_name', $cols)) {
+        $customerNameCol = 'full_name';
+    } elseif (in_array('first_name', $cols) && in_array('last_name', $cols)) {
+        $customerNameCol = "CONCAT(first_name, ' ', last_name)";
+    }
+}
+
+// Detect bookings table primary key and employee foreign key
+$bookingIdCol = 'booking_id';
+$bookingEmployeeCol = 'employee_id';
+$bookingServiceCol = 'service_id';
+$bookingCustomerCol = 'customer_id';
+$bookingVehicleCol = 'vehicle_id';
+
+$bookingCols = $conn->query("SELECT COLUMN_NAME, COLUMN_KEY FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = '$dbName' AND TABLE_NAME = 'bookings'");
+if ($bookingCols && $bookingCols->num_rows > 0) {
+    while ($col = $bookingCols->fetch_assoc()) {
+        $colName = $col['COLUMN_NAME'];
+        $lower = strtolower($colName);
+        
+        if ($col['COLUMN_KEY'] === 'PRI') {
+            $bookingIdCol = $colName;
+        }
+        if (strpos($lower, 'employee') !== false || strpos($lower, 'staff') !== false || strpos($lower, 'assigned') !== false) {
+            $bookingEmployeeCol = $colName;
+        }
+        if (strpos($lower, 'service') !== false && strpos($lower, 'id') !== false) {
+            $bookingServiceCol = $colName;
+        }
+        if (strpos($lower, 'customer') !== false && strpos($lower, 'id') !== false) {
+            $bookingCustomerCol = $colName;
+        }
+        if (strpos($lower, 'vehicle') !== false && strpos($lower, 'id') !== false) {
+            $bookingVehicleCol = $colName;
+        }
+    }
+}
+
+// Get employee ID from users/employees table
+$employeeId = null;
+$userIdCol = 'user_id';
+$employeeIdCol = 'employee_id';
+
+$userQuery = "SELECT * FROM users WHERE email = ? LIMIT 1";
+$stmt = $conn->prepare($userQuery);
+$stmt->bind_param("s", $employeeEmail);
+$stmt->execute();
+$result = $stmt->get_result();
+
+if ($result && $result->num_rows > 0) {
+    $user = $result->fetch_assoc();
+    $userIdValue = $user['user_id'] ?? $user['id'] ?? null;
+    
+    if ($userIdValue) {
+        // Try to get employee_id from employees table
+        $empQuery = "SELECT * FROM employees WHERE user_id = ? LIMIT 1";
+        $empStmt = $conn->prepare($empQuery);
+        $empStmt->bind_param("i", $userIdValue);
+        $empStmt->execute();
+        $empResult = $empStmt->get_result();
+        
+        if ($empResult && $empResult->num_rows > 0) {
+            $emp = $empResult->fetch_assoc();
+            $employeeId = $emp['employee_id'] ?? $emp['id'] ?? null;
+        }
+    }
+}
+
+// Fetch today's tasks/bookings assigned to this employee
+$today = date('Y-m-d');
+
+$tasksQuery = "SELECT b.*, 
+               s.`$serviceNameCol` AS service_name,
+               s.`$servicePriceCol` AS service_price,
+               c.`$customerNameCol` AS customer_name
+               FROM bookings b
+               LEFT JOIN services s ON b.`$bookingServiceCol` = s.service_id
+               LEFT JOIN customers c ON b.`$bookingCustomerCol` = c.customer_id
+               WHERE b.booking_date = ?";
+
+// Add employee filter if we have an employee ID
+if ($employeeId) {
+    $tasksQuery .= " AND (b.`$bookingEmployeeCol` = ? OR b.`$bookingEmployeeCol` IS NULL)";
+}
+
+$tasksQuery .= " ORDER BY b.booking_time ASC";
+
+$stmt = $conn->prepare($tasksQuery);
+
+if ($employeeId) {
+    $stmt->bind_param("si", $today, $employeeId);
+} else {
+    $stmt->bind_param("s", $today);
+}
+
+$stmt->execute();
+$tasksResult = $stmt->get_result();
+
+$tasks = [];
+$pendingCount = 0;
+$inProgressCount = 0;
+$completedToday = 0;
+
+while ($row = $tasksResult->fetch_assoc()) {
+    // Get vehicle info if vehicle_id exists
+    if (isset($row[$bookingVehicleCol]) && $row[$bookingVehicleCol]) {
+        $vehicleQuery = "SELECT * FROM vehicles WHERE vehicle_id = ? LIMIT 1";
+        $vStmt = $conn->prepare($vehicleQuery);
+        $vStmt->bind_param("i", $row[$bookingVehicleCol]);
+        $vStmt->execute();
+        $vResult = $vStmt->get_result();
+        
+        if ($vResult && $vResult->num_rows > 0) {
+            $vehicle = $vResult->fetch_assoc();
+            $row['vehicle_make'] = $vehicle['make'] ?? '';
+            $row['vehicle_model'] = $vehicle['model'] ?? '';
+            $row['plate_number'] = $vehicle['plate_number'] ?? '';
+        }
+    }
+    
+    $tasks[] = $row;
+    
+    $status = strtolower($row['status'] ?? '');
+    if (in_array($status, ['pending', 'confirmed'])) {
+        $pendingCount++;
+    } elseif ($status == 'in progress' || $status == 'in_progress') {
+        $inProgressCount++;
+    } elseif ($status == 'completed') {
+        $completedToday++;
+    }
+}
+
+// Get employee statistics
+$totalCompleted = 0;
+$totalRevenue = 0;
+
+if ($employeeId) {
+    $statsQuery = "SELECT 
+                   COUNT(*) as total_completed,
+                   SUM(b.total_amount) as total_revenue
+                   FROM bookings b
+                   WHERE b.`$bookingEmployeeCol` = ? AND b.status = 'completed'";
+    $statsStmt = $conn->prepare($statsQuery);
+    $statsStmt->bind_param("i", $employeeId);
+    $statsStmt->execute();
+    $statsResult = $statsStmt->get_result();
+    $stats = $statsResult->fetch_assoc();
+    
+    $totalCompleted = $stats['total_completed'] ?? 0;
+    $totalRevenue = $stats['total_revenue'] ?? 0;
+    
+    // Get employee rating
+    $ratingQuery = "SELECT AVG(rating) as avg_rating FROM reviews WHERE employee_id = ?";
+    $ratingStmt = $conn->prepare($ratingQuery);
+    $ratingStmt->bind_param("i", $employeeId);
+    $ratingStmt->execute();
+    $ratingResult = $ratingStmt->get_result();
+    $rating = $ratingResult->fetch_assoc();
+    $avgRating = round($rating['avg_rating'] ?? 4.5, 1);
+} else {
+    $avgRating = 4.5;
+}
+?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -53,6 +281,7 @@
             cursor: pointer;
             font-weight: 500;
             transition: all 0.3s ease;
+            text-decoration: none;
         }
 
         .logout-btn:hover {
@@ -123,29 +352,6 @@
             margin-bottom: 0.5rem;
         }
 
-        .clock-in-btn {
-            padding: 1rem 2.5rem;
-            background: white;
-            color: #667eea;
-            border: none;
-            border-radius: 50px;
-            font-size: 1.1rem;
-            font-weight: bold;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            box-shadow: 0 5px 20px rgba(0, 0, 0, 0.2);
-        }
-
-        .clock-in-btn:hover {
-            transform: translateY(-3px);
-            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
-        }
-
-        .clock-in-btn.clocked-in {
-            background: #ff4757;
-            color: white;
-        }
-
         .stats-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -184,18 +390,12 @@
             font-size: 0.9rem;
         }
 
-        .dashboard-grid {
-            display: grid;
-            grid-template-columns: 2fr 1fr;
-            gap: 2rem;
-            margin-bottom: 2rem;
-        }
-
         .card {
             background: white;
             padding: 2rem;
             border-radius: 15px;
             box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+            margin-bottom: 2rem;
         }
 
         .card-header {
@@ -222,28 +422,11 @@
             border-radius: 10px;
             margin-bottom: 1rem;
             transition: all 0.3s ease;
-            cursor: pointer;
         }
 
         .task-item:hover {
             background: #e9ecef;
             transform: translateX(5px);
-        }
-
-        .task-item.urgent {
-            border-left: 4px solid #ff4757;
-        }
-
-        .task-item.normal {
-            border-left: 4px solid #ffa502;
-        }
-
-        .task-item.low {
-            border-left: 4px solid #667eea;
-        }
-
-        .task-item.completed {
-            opacity: 0.6;
         }
 
         .task-info h4 {
@@ -262,15 +445,18 @@
             gap: 0.5rem;
         }
 
-        .btn-start {
+        .btn-start, .btn-complete {
             padding: 0.6rem 1.5rem;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
             border: none;
             border-radius: 25px;
             cursor: pointer;
             font-weight: 500;
             transition: all 0.3s ease;
+        }
+
+        .btn-start {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         }
 
         .btn-start:hover {
@@ -279,14 +465,7 @@
         }
 
         .btn-complete {
-            padding: 0.6rem 1.5rem;
             background: #28a745;
-            color: white;
-            border: none;
-            border-radius: 25px;
-            cursor: pointer;
-            font-weight: 500;
-            transition: all 0.3s ease;
         }
 
         .btn-complete:hover {
@@ -294,211 +473,62 @@
             transform: translateY(-2px);
         }
 
-        .btn-complete:disabled {
-            background: #6c757d;
-            cursor: not-allowed;
-            transform: none;
-        }
-
-        .performance-card {
-            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-            color: white;
-            padding: 1.5rem;
-            border-radius: 15px;
-            margin-bottom: 1rem;
-        }
-
-        .performance-title {
-            font-size: 1.2rem;
-            margin-bottom: 1rem;
-        }
-
-        .performance-stat {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 1rem;
-        }
-
-        .performance-label {
-            font-size: 0.9rem;
-        }
-
-        .performance-value {
-            font-size: 1.3rem;
-            font-weight: bold;
-        }
-
-        .progress-bar {
-            background: rgba(255, 255, 255, 0.3);
-            height: 8px;
-            border-radius: 4px;
-            overflow: hidden;
-            margin-top: 0.5rem;
-        }
-
-        .progress-fill {
-            background: white;
-            height: 100%;
-            border-radius: 4px;
-            transition: width 0.5s ease;
-        }
-
-        .schedule-item {
-            display: flex;
-            gap: 1rem;
-            padding: 1rem;
-            border-bottom: 1px solid #f0f0f0;
-        }
-
-        .schedule-time {
-            font-weight: bold;
-            color: #667eea;
-            min-width: 80px;
-        }
-
-        .schedule-details h4 {
-            font-size: 0.95rem;
-            margin-bottom: 0.3rem;
-            color: #333;
-        }
-
-        .schedule-details p {
-            font-size: 0.85rem;
-            color: #666;
-        }
-
-        .quick-actions {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 1rem;
-            margin-bottom: 1rem;
-        }
-
-        .quick-action-btn {
-            padding: 1rem;
-            background: white;
-            border: 2px solid #667eea;
-            color: #667eea;
-            border-radius: 10px;
-            cursor: pointer;
-            font-weight: 500;
-            transition: all 0.3s ease;
+        .no-tasks {
             text-align: center;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 0.5rem;
+            padding: 3rem;
+            color: #999;
         }
 
-        .quick-action-btn:hover {
-            background: #667eea;
-            color: white;
-            transform: translateY(-3px);
+        .no-tasks-icon {
+            font-size: 4rem;
+            margin-bottom: 1rem;
         }
 
-        .quick-action-icon {
-            font-size: 1.5rem;
-        }
-
-        .notification-badge {
-            position: relative;
-        }
-
-        .badge-count {
-            position: absolute;
-            top: -8px;
-            right: -8px;
-            background: #ff4757;
-            color: white;
-            border-radius: 50%;
-            width: 20px;
-            height: 20px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 0.75rem;
-            font-weight: bold;
-        }
-
-        .tips-section {
-            background: #fff3cd;
-            border-left: 4px solid #ffa502;
-            padding: 1rem;
-            border-radius: 10px;
-            margin-top: 1rem;
-        }
-
-        .tips-section h4 {
-            color: #856404;
-            margin-bottom: 0.5rem;
-        }
-
-        .tips-section p {
-            color: #856404;
-            font-size: 0.9rem;
-        }
-
-        .notification {
-            position: fixed;
-            top: 80px;
-            right: 20px;
-            background: white;
+        .message {
             padding: 1rem 1.5rem;
             border-radius: 10px;
-            box-shadow: 0 5px 20px rgba(0, 0, 0, 0.2);
-            display: flex;
-            align-items: center;
-            gap: 1rem;
-            z-index: 1001;
+            margin-bottom: 1.5rem;
             animation: slideIn 0.3s ease;
-            border-left: 4px solid #17a2b8;
+        }
+
+        .message.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .message.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
         }
 
         @keyframes slideIn {
             from {
-                transform: translateX(400px);
+                transform: translateY(-20px);
                 opacity: 0;
             }
             to {
-                transform: translateX(0);
+                transform: translateY(0);
                 opacity: 1;
             }
         }
 
-        @media (max-width: 1024px) {
-            .dashboard-grid {
-                grid-template-columns: 1fr;
-            }
-        }
-
         @media (max-width: 768px) {
-            .stats-grid {
-                grid-template-columns: 1fr;
-            }
-
             .welcome-content {
                 flex-direction: column;
                 gap: 1rem;
             }
 
-            .navbar {
-                padding: 1rem;
-            }
-
-            .employee-info span {
-                display: none;
-            }
-
-            .quick-actions {
+            .stats-grid {
                 grid-template-columns: 1fr;
             }
-        }
 
-        .timer-display {
-            font-size: 1.5rem;
-            font-weight: bold;
-            margin-top: 0.5rem;
+            .task-item {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 1rem;
+            }
         }
     </style>
 </head>
@@ -510,381 +540,106 @@
                 <span class="status-dot"></span>
                 <span>On Duty</span>
             </div>
-            <span>Employee: Employee</span>
+            <span>Employee: <?php echo htmlspecialchars($employeeName); ?></span>
             <div class="employee-avatar">👤</div>
-            <button class="logout-btn" onclick="logout()">Logout</button>
+            <a href="../landing/logout.php" class="logout-btn">Logout</a>
         </div>
     </nav>
 
     <div class="container">
+        <?php if (isset($_SESSION['success'])): ?>
+            <div class="message success">
+                <?php echo htmlspecialchars($_SESSION['success']); unset($_SESSION['success']); ?>
+            </div>
+        <?php endif; ?>
+
+        <?php if (isset($_SESSION['error'])): ?>
+            <div class="message error">
+                <?php echo htmlspecialchars($_SESSION['error']); unset($_SESSION['error']); ?>
+            </div>
+        <?php endif; ?>
+
         <div class="welcome-section">
             <div class="welcome-content">
                 <div class="welcome-text">
-                    <h1>Good Morning, Employee! 👋</h1>
-                    <p id="taskCount">You have 5 tasks assigned today</p>
-                    <div class="timer-display" id="workTimer">Shift Time: 00:00:00</div>
+                    <h1>Good <?php echo date('H') < 12 ? 'Morning' : (date('H') < 18 ? 'Afternoon' : 'Evening'); ?>, <?php echo htmlspecialchars($employeeName); ?>! 👋</h1>
+                    <p>You have <?php echo $pendingCount + $inProgressCount; ?> tasks assigned today</p>
                 </div>
-                <button class="clock-in-btn" id="clockBtn" onclick="toggleClock()">Clock In</button>
             </div>
         </div>
 
         <div class="stats-grid">
             <div class="stat-card">
                 <div class="stat-icon">✅</div>
-                <div class="stat-value" id="completedCount">8</div>
+                <div class="stat-value"><?php echo $completedToday; ?></div>
                 <div class="stat-label">Completed Today</div>
             </div>
             <div class="stat-card">
                 <div class="stat-icon">🔄</div>
-                <div class="stat-value" id="inProgressCount">0</div>
+                <div class="stat-value"><?php echo $inProgressCount; ?></div>
                 <div class="stat-label">In Progress</div>
             </div>
             <div class="stat-card">
                 <div class="stat-icon">⏰</div>
-                <div class="stat-value" id="pendingCount">5</div>
+                <div class="stat-value"><?php echo $pendingCount; ?></div>
                 <div class="stat-label">Pending Tasks</div>
             </div>
             <div class="stat-card">
                 <div class="stat-icon">⭐</div>
-                <div class="stat-value">4.9</div>
+                <div class="stat-value"><?php echo $avgRating; ?></div>
                 <div class="stat-label">Your Rating</div>
             </div>
         </div>
 
-        <div class="dashboard-grid">
-            <div class="card">
-                <div class="card-header">
-                    <h2 class="card-title">My Tasks</h2>
-                    <select style="padding: 0.5rem; border-radius: 10px; border: 2px solid #e0e0e0;">
-                        <option>All Tasks</option>
-                        <option>Urgent</option>
-                        <option>Normal</option>
-                        <option>Low Priority</option>
-                    </select>
-                </div>
-
-                <div id="taskList">
-                    <!-- Tasks will be populated here -->
-                </div>
-
-                <div class="tips-section">
-                    <h4>💡 Pro Tip</h4>
-                    <p>Always check the vehicle for existing damages before starting the wash. Take photos if needed.</p>
-                </div>
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">My Tasks for Today</h2>
             </div>
 
-            <div>
-                <div class="card">
-                    <div class="performance-card">
-                        <div class="performance-title">Today's Performance</div>
-                        <div class="performance-stat">
-                            <span class="performance-label">Completed Tasks</span>
-                            <span class="performance-value" id="performanceComplete">8/13</span>
-                        </div>
-                        <div class="progress-bar">
-                            <div class="progress-fill" id="progressBar" style="width: 62%;"></div>
-                        </div>
-                        <div class="performance-stat" style="margin-top: 1rem;">
-                            <span class="performance-label">Efficiency</span>
-                            <span class="performance-value">95%</span>
-                        </div>
-                        <div class="progress-bar">
-                            <div class="progress-fill" style="width: 95%;"></div>
-                        </div>
-                    </div>
-
-                    <div class="quick-actions">
-                        <button class="quick-action-btn" onclick="alert('Reporting issue...')">
-                            <span class="quick-action-icon">⚠️</span>
-                            <span>Report Issue</span>
-                        </button>
-                        <button class="quick-action-btn" onclick="alert('Requesting supplies...')">
-                            <span class="quick-action-icon">🧴</span>
-                            <span>Request Supplies</span>
-                        </button>
-                        <button class="quick-action-btn notification-badge" onclick="alert('Opening messages...')">
-                            <span class="quick-action-icon">💬</span>
-                            <span>Messages</span>
-                            <span class="badge-count">3</span>
-                        </button>
-                        <button class="quick-action-btn" onclick="alert('Taking break...')">
-                            <span class="quick-action-icon">☕</span>
-                            <span>Break Time</span>
-                        </button>
-                    </div>
+            <?php if (empty($tasks)): ?>
+                <div class="no-tasks">
+                    <div class="no-tasks-icon">📋</div>
+                    <h3>No Tasks Assigned Yet</h3>
+                    <p>Check back later or contact your supervisor for task assignments.</p>
                 </div>
-
-                <div class="card" style="margin-top: 2rem;">
-                    <div class="card-header">
-                        <h2 class="card-title">Today's Schedule</h2>
-                    </div>
-                    <div class="schedule-item">
-                        <div class="schedule-time">08:00 AM</div>
-                        <div class="schedule-details">
-                            <h4>Shift Start</h4>
-                            <p>Morning briefing with supervisor</p>
+            <?php else: ?>
+                <?php foreach ($tasks as $task): ?>
+                    <div class="task-item">
+                        <div class="task-info">
+                            <h4><?php echo htmlspecialchars($task['service_name'] ?? 'Service'); ?> - <?php echo htmlspecialchars(($task['vehicle_make'] ?? '') . ' ' . ($task['vehicle_model'] ?? 'Vehicle')); ?></h4>
+                            <p>
+                                Customer: <?php echo htmlspecialchars($task['customer_name'] ?? 'N/A'); ?> • 
+                                Time: <?php echo date('g:i A', strtotime($task['booking_time'])); ?> • 
+                                Plate: <?php echo htmlspecialchars($task['plate_number'] ?? 'N/A'); ?>
+                            </p>
+                        </div>
+                        <div class="task-actions">
+                            <?php 
+                            $status = strtolower($task['status'] ?? '');
+                            if (in_array($status, ['pending', 'confirmed'])): 
+                            ?>
+                                <form method="POST" action="update_task.php" style="display: inline;">
+                                    <input type="hidden" name="booking_id" value="<?php echo $task[$bookingIdCol]; ?>">
+                                    <input type="hidden" name="action" value="start">
+                                    <button type="submit" class="btn-start">Start</button>
+                                </form>
+                            <?php elseif ($status == 'in progress' || $status == 'in_progress'): ?>
+                                <form method="POST" action="update_task.php" style="display: inline;">
+                                    <input type="hidden" name="booking_id" value="<?php echo $task[$bookingIdCol]; ?>">
+                                    <input type="hidden" name="action" value="complete">
+                                    <button type="submit" class="btn-complete">Complete</button>
+                                </form>
+                            <?php else: ?>
+                                <span style="color: #28a745; font-weight: 500;">✓ Completed</span>
+                            <?php endif; ?>
                         </div>
                     </div>
-                    <div class="schedule-item">
-                        <div class="schedule-time">10:00 AM</div>
-                        <div class="schedule-details">
-                            <h4>Peak Hours Begin</h4>
-                            <p>5 vehicles scheduled</p>
-                        </div>
-                    </div>
-                    <div class="schedule-item">
-                        <div class="schedule-time">12:00 PM</div>
-                        <div class="schedule-details">
-                            <h4>Lunch Break</h4>
-                            <p>30 minutes break time</p>
-                        </div>
-                    </div>
-                    <div class="schedule-item">
-                        <div class="schedule-time">05:00 PM</div>
-                        <div class="schedule-details">
-                            <h4>Shift End</h4>
-                            <p>Clean up and report submission</p>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="card" style="margin-top: 2rem;">
-                    <div class="card-header">
-                        <h2 class="card-title">This Week Stats</h2>
-                    </div>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
-                        <div style="text-align: center; padding: 1rem; background: #f8f9fa; border-radius: 10px;">
-                            <div style="font-size: 1.5rem; font-weight: bold; color: #667eea;">42</div>
-                            <div style="font-size: 0.85rem; color: #666;">Total Tasks</div>
-                        </div>
-                        <div style="text-align: center; padding: 1rem; background: #f8f9fa; border-radius: 10px;">
-                            <div style="font-size: 1.5rem; font-weight: bold; color: #667eea;">38</div>
-                            <div style="font-size: 0.85rem; color: #666;">Completed</div>
-                        </div>
-                        <div style="text-align: center; padding: 1rem; background: #f8f9fa; border-radius: 10px;">
-                            <div style="font-size: 1.5rem; font-weight: bold; color: #667eea;">₱8,500</div>
-                            <div style="font-size: 0.85rem; color: #666;">Tips Earned</div>
-                        </div>
-                        <div style="text-align: center; padding: 1rem; background: #f8f9fa; border-radius: 10px;">
-                            <div style="font-size: 1.5rem; font-weight: bold; color: #667eea;">32</div>
-                            <div style="font-size: 0.85rem; color: #666;">Hours Worked</div>
-                        </div>
-                    </div>
-                </div>
-            </div>
+                <?php endforeach; ?>
+            <?php endif; ?>
         </div>
     </div>
-
-    <script>
-        let isClockedIn = false;
-        let startTime = null;
-        let timerInterval = null;
-
-        // Load bookings and convert to tasks
-        let tasks = [];
-        let lastBookingCount = 0;
-
-        function loadTasksFromBookings() {
-            const bookings = JSON.parse(localStorage.getItem('smartwash_bookings')) || [];
-            const upcomingBookings = bookings.filter(b => b.status === 'Upcoming' || b.status === 'In Progress');
-            
-            // Check for new bookings
-            if (upcomingBookings.length > lastBookingCount) {
-                const newCount = upcomingBookings.length - lastBookingCount;
-                showNotification(`${newCount} new booking${newCount > 1 ? 's' : ''} received! 🚗`);
-            }
-            lastBookingCount = upcomingBookings.length;
-            
-            // Convert bookings to tasks
-            tasks = upcomingBookings.map((booking, index) => ({
-                id: booking.id,
-                service: booking.service,
-                vehicle: booking.vehicle,
-                customer: 'Customer',
-                bay: `Bay ${(index % 3) + 1}`,
-                time: booking.time || '10:00 AM',
-                priority: booking.service.includes('Ultimate') ? 'Urgent' : 
-                         booking.service.includes('Premium') ? 'Normal' : 'Low',
-                status: booking.status
-            }));
-            
-            updateTaskList();
-            updateStats();
-        }
-
-        function showNotification(message) {
-            const notification = document.createElement('div');
-            notification.className = 'notification';
-            notification.innerHTML = `
-                <span style="font-size: 1.5rem;">🔔</span>
-                <span>${message}</span>
-            `;
-            document.body.appendChild(notification);
-            
-            setTimeout(() => {
-                notification.remove();
-            }, 5000);
-        }
-
-        function updateTaskList() {
-            const taskList = document.getElementById('taskList');
-            taskList.innerHTML = '';
-            
-            if (tasks.length === 0) {
-                taskList.innerHTML = '<p style="text-align: center; color: #666; padding: 2rem;">No tasks available at the moment</p>';
-                return;
-            }
-            
-            tasks.forEach(task => {
-                const taskItem = document.createElement('div');
-                taskItem.className = `task-item ${task.priority.toLowerCase()} ${task.status === 'Completed' ? 'completed' : ''}`;
-                
-                let buttonHTML = '';
-                if (task.status === 'Upcoming') {
-                    buttonHTML = `<button class="btn-start" onclick="startTask(${task.id})">Start</button>`;
-                } else if (task.status === 'In Progress') {
-                    buttonHTML = `<button class="btn-complete" onclick="completeTask(${task.id})">Complete</button>`;
-                } else {
-                    buttonHTML = `<button class="btn-complete" disabled>Completed ✓</button>`;
-                }
-                
-                taskItem.innerHTML = `
-                    <div class="task-info">
-                        <h4>${task.service} - ${task.vehicle}</h4>
-                        <p>Customer: ${task.customer} • ${task.bay} • ${task.time}</p>
-                    </div>
-                    <div class="task-actions">
-                        ${buttonHTML}
-                    </div>
-                `;
-                taskList.appendChild(taskItem);
-            });
-        }
-
-        function updateStats() {
-            const pending = tasks.filter(t => t.status === 'Upcoming').length;
-            const inProgress = tasks.filter(t => t.status === 'In Progress').length;
-            const completed = parseInt(document.getElementById('completedCount').textContent);
-            
-            document.getElementById('pendingCount').textContent = pending;
-            document.getElementById('inProgressCount').textContent = inProgress;
-            document.getElementById('taskCount').textContent = `You have ${pending + inProgress} tasks assigned today`;
-            
-            const total = completed + pending + inProgress;
-            const percentage = total > 0 ? Math.round((completed / total) * 100) : 0;
-            document.getElementById('performanceComplete').textContent = `${completed}/${total}`;
-            document.getElementById('progressBar').style.width = `${percentage}%`;
-        }
-
-        function startTask(taskId) {
-            const task = tasks.find(t => t.id === taskId);
-            if (!task) return;
-            
-            if (confirm(`Start working on this task?\n\n${task.service} - ${task.vehicle}`)) {
-                // Update task status
-                task.status = 'In Progress';
-                
-                // Update in localStorage
-                const bookings = JSON.parse(localStorage.getItem('smartwash_bookings')) || [];
-                const booking = bookings.find(b => b.id === taskId);
-                if (booking) {
-                    booking.status = 'In Progress';
-                    localStorage.setItem('smartwash_bookings', JSON.stringify(bookings));
-                }
-                
-                updateTaskList();
-                updateStats();
-                showNotification(`Started: ${task.service}`);
-            }
-        }
-
-        function completeTask(taskId) {
-            const task = tasks.find(t => t.id === taskId);
-            if (!task) return;
-            
-            if (confirm(`Mark this task as complete?\n\n${task.service} - ${task.vehicle}`)) {
-                // Update task status
-                task.status = 'Completed';
-                
-                // Update in localStorage
-                const bookings = JSON.parse(localStorage.getItem('smartwash_bookings')) || [];
-                const booking = bookings.find(b => b.id === taskId);
-                if (booking) {
-                    booking.status = 'Completed';
-                    localStorage.setItem('smartwash_bookings', JSON.stringify(bookings));
-                }
-                
-                // Update completed count
-                const completedStat = document.getElementById('completedCount');
-                completedStat.textContent = parseInt(completedStat.textContent) + 1;
-                
-                // Remove from tasks array
-                tasks = tasks.filter(t => t.id !== taskId);
-                
-                updateTaskList();
-                updateStats();
-                showNotification(`Completed: ${task.service} ✓`);
-            }
-        }
-
-        function toggleClock() {
-            const btn = document.getElementById('clockBtn');
-            const statusIndicator = document.querySelector('.status-indicator span:last-child');
-            
-            if (!isClockedIn) {
-                isClockedIn = true;
-                btn.textContent = 'Clock Out';
-                btn.classList.add('clocked-in');
-                statusIndicator.textContent = 'On Duty';
-                startTime = Date.now();
-                startTimer();
-                showNotification('Clocked in successfully! Have a great shift!');
-            } else {
-                if (confirm('Are you sure you want to clock out?')) {
-                    isClockedIn = false;
-                    btn.textContent = 'Clock In';
-                    btn.classList.remove('clocked-in');
-                    statusIndicator.textContent = 'Off Duty';
-                    stopTimer();
-                    showNotification('Clocked out successfully! Great work today!');
-                }
-            }
-        }
-
-        function startTimer() {
-            timerInterval = setInterval(updateTimer, 1000);
-        }
-
-        function stopTimer() {
-            clearInterval(timerInterval);
-            document.getElementById('workTimer').textContent = 'Shift Time: 00:00:00';
-        }
-
-        function updateTimer() {
-            if (!startTime) return;
-            
-            const elapsed = Date.now() - startTime;
-            const hours = Math.floor(elapsed / 3600000);
-            const minutes = Math.floor((elapsed % 3600000) / 60000);
-            const seconds = Math.floor((elapsed % 60000) / 1000);
-            
-            const timeString = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
-            document.getElementById('workTimer').textContent = `Shift Time: ${timeString}`;
-        }
-
-        function logout() {
-            if (confirm('Are you sure you want to logout?')) {
-                window.location.href = 'index.html';
-            }
-        }
-
-        // Initialize and check for new bookings
-        document.addEventListener('DOMContentLoaded', function() {
-            loadTasksFromBookings();
-            
-            // Check for new bookings every 3 seconds
-            setInterval(loadTasksFromBookings, 3000);
-        });
-    </script>
 </body>
 </html>
+<?php
+$conn->close();
+?>
