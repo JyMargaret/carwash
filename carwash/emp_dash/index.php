@@ -19,211 +19,115 @@ if (!isset($_SESSION['userEmail']) || $_SESSION['userRole'] !== 'employee') {
 $dbPath = __DIR__ . '/../database/database.php';
 if (file_exists($dbPath)) {
     include $dbPath;
-    if (!isset($conn) || !$conn || $conn->connect_error) {
-        die("Database connection failed. Please check your database.php file.");
-    }
 } else {
     die("Database configuration file not found.");
 }
 
-// Get employee information
 $employeeEmail = $_SESSION['userEmail'];
 $employeeName = $_SESSION['userName'] ?? 'Employee';
 
-// Get database name
-$dbNameQuery = "SELECT DATABASE() AS dbname";
-$dbNameResult = $conn->query($dbNameQuery);
-$dbName = $dbNameResult ? $dbNameResult->fetch_assoc()['dbname'] : 'smartwash_db';
-
-// Detect column names for services table
-$serviceNameCol = 'service_name';
-$servicePriceCol = 'price';
-$serviceCols = $conn->query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = '$dbName' AND TABLE_NAME = 'services'");
-if ($serviceCols && $serviceCols->num_rows > 0) {
-    while ($col = $serviceCols->fetch_assoc()) {
-        $colName = $col['COLUMN_NAME'];
-        $lower = strtolower($colName);
-        if (in_array($lower, ['name', 'service_name'])) {
-            $serviceNameCol = $colName;
-        }
-        if (in_array($lower, ['price', 'base_price'])) {
-            $servicePriceCol = $colName;
-        }
-    }
-}
-
-// Detect column names for customers table
-$customerNameCol = 'name';
-$customerCols = $conn->query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = '$dbName' AND TABLE_NAME = 'customers'");
-if ($customerCols && $customerCols->num_rows > 0) {
-    $cols = [];
-    while ($col = $customerCols->fetch_assoc()) {
-        $cols[] = $col['COLUMN_NAME'];
-    }
-    
-    if (in_array('name', $cols)) {
-        $customerNameCol = 'name';
-    } elseif (in_array('full_name', $cols)) {
-        $customerNameCol = 'full_name';
-    } elseif (in_array('first_name', $cols) && in_array('last_name', $cols)) {
-        $customerNameCol = "CONCAT(first_name, ' ', last_name)";
-    }
-}
-
-// Detect bookings table primary key and employee foreign key
-$bookingIdCol = 'booking_id';
-$bookingEmployeeCol = 'employee_id';
-$bookingServiceCol = 'service_id';
-$bookingCustomerCol = 'customer_id';
-$bookingVehicleCol = 'vehicle_id';
-
-$bookingCols = $conn->query("SELECT COLUMN_NAME, COLUMN_KEY FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = '$dbName' AND TABLE_NAME = 'bookings'");
-if ($bookingCols && $bookingCols->num_rows > 0) {
-    while ($col = $bookingCols->fetch_assoc()) {
-        $colName = $col['COLUMN_NAME'];
-        $lower = strtolower($colName);
-        
-        if ($col['COLUMN_KEY'] === 'PRI') {
-            $bookingIdCol = $colName;
-        }
-        if (strpos($lower, 'employee') !== false || strpos($lower, 'staff') !== false || strpos($lower, 'assigned') !== false) {
-            $bookingEmployeeCol = $colName;
-        }
-        if (strpos($lower, 'service') !== false && strpos($lower, 'id') !== false) {
-            $bookingServiceCol = $colName;
-        }
-        if (strpos($lower, 'customer') !== false && strpos($lower, 'id') !== false) {
-            $bookingCustomerCol = $colName;
-        }
-        if (strpos($lower, 'vehicle') !== false && strpos($lower, 'id') !== false) {
-            $bookingVehicleCol = $colName;
-        }
-    }
-}
-
-// Get employee ID from users/employees table
+// 1. Get Employee ID from Users -> Employees table
 $employeeId = null;
-$userIdCol = 'user_id';
-$employeeIdCol = 'employee_id';
-
-$userQuery = "SELECT * FROM users WHERE email = ? LIMIT 1";
+$userQuery = "SELECT user_id FROM users WHERE email = ? LIMIT 1";
 $stmt = $conn->prepare($userQuery);
 $stmt->bind_param("s", $employeeEmail);
 $stmt->execute();
-$result = $stmt->get_result();
+$userResult = $stmt->get_result();
 
-if ($result && $result->num_rows > 0) {
-    $user = $result->fetch_assoc();
-    $userIdValue = $user['user_id'] ?? $user['id'] ?? null;
+if ($userResult && $userResult->num_rows > 0) {
+    $user = $userResult->fetch_assoc();
+    $userId = $user['user_id'];
     
-    if ($userIdValue) {
-        // Try to get employee_id from employees table
-        $empQuery = "SELECT * FROM employees WHERE user_id = ? LIMIT 1";
-        $empStmt = $conn->prepare($empQuery);
-        $empStmt->bind_param("i", $userIdValue);
-        $empStmt->execute();
-        $empResult = $empStmt->get_result();
-        
-        if ($empResult && $empResult->num_rows > 0) {
-            $emp = $empResult->fetch_assoc();
-            $employeeId = $emp['employee_id'] ?? $emp['id'] ?? null;
+    // Fetch employee record
+    // Note: Adjust column name 'name' or 'full_name' based on your schema
+    $empQuery = "SELECT employee_id, name FROM employees WHERE user_id = ? LIMIT 1";
+    $empStmt = $conn->prepare($empQuery);
+    $empStmt->bind_param("i", $userId);
+    $empStmt->execute();
+    $empResult = $empStmt->get_result();
+    
+    if ($empResult && $empResult->num_rows > 0) {
+        $emp = $empResult->fetch_assoc();
+        $employeeId = $emp['employee_id'];
+        if (!empty($emp['name'])) {
+            $employeeName = $emp['name'];
         }
     }
 }
 
-// Fetch today's tasks/bookings assigned to this employee
-$today = date('Y-m-d');
-
-$tasksQuery = "SELECT b.*, 
-               s.`$serviceNameCol` AS service_name,
-               s.`$servicePriceCol` AS service_price,
-               c.`$customerNameCol` AS customer_name
-               FROM bookings b
-               LEFT JOIN services s ON b.`$bookingServiceCol` = s.service_id
-               LEFT JOIN customers c ON b.`$bookingCustomerCol` = c.customer_id
-               WHERE b.booking_date = ?";
-
-// Add employee filter if we have an employee ID
-if ($employeeId) {
-    $tasksQuery .= " AND (b.`$bookingEmployeeCol` = ? OR b.`$bookingEmployeeCol` IS NULL)";
-}
-
-$tasksQuery .= " ORDER BY b.booking_time ASC";
-
-$stmt = $conn->prepare($tasksQuery);
-
-if ($employeeId) {
-    $stmt->bind_param("si", $today, $employeeId);
-} else {
-    $stmt->bind_param("s", $today);
-}
-
-$stmt->execute();
-$tasksResult = $stmt->get_result();
-
+// 2. Fetch Tasks (Assigned to this employee OR Unassigned)
 $tasks = [];
-$pendingCount = 0;
-$inProgressCount = 0;
-$completedToday = 0;
+if ($employeeId) {
+    // Check if 'assigned_staff_id' or 'employee_id' is the correct column name based on your schema.
+    // Based on previous files, it seems to be 'assigned_staff_id' in bookings.
+    // However, your snippet used 'employee_id'. I will use 'assigned_staff_id' as per admin files, 
+    // but fallback to logic provided.
+    
+    $colCheck = $conn->query("SHOW COLUMNS FROM bookings LIKE 'assigned_staff_id'");
+    $empCol = ($colCheck && $colCheck->num_rows > 0) ? 'assigned_staff_id' : 'employee_id';
 
-while ($row = $tasksResult->fetch_assoc()) {
-    // Get vehicle info if vehicle_id exists
-    if (isset($row[$bookingVehicleCol]) && $row[$bookingVehicleCol]) {
-        $vehicleQuery = "SELECT * FROM vehicles WHERE vehicle_id = ? LIMIT 1";
-        $vStmt = $conn->prepare($vehicleQuery);
-        $vStmt->bind_param("i", $row[$bookingVehicleCol]);
-        $vStmt->execute();
-        $vResult = $vStmt->get_result();
-        
-        if ($vResult && $vResult->num_rows > 0) {
-            $vehicle = $vResult->fetch_assoc();
-            $row['vehicle_make'] = $vehicle['make'] ?? '';
-            $row['vehicle_model'] = $vehicle['model'] ?? '';
-            $row['plate_number'] = $vehicle['plate_number'] ?? '';
-        }
-    }
-    
-    $tasks[] = $row;
-    
-    $status = strtolower($row['status'] ?? '');
-    if (in_array($status, ['pending', 'confirmed'])) {
-        $pendingCount++;
-    } elseif ($status == 'in progress' || $status == 'in_progress') {
-        $inProgressCount++;
-    } elseif ($status == 'completed') {
-        $completedToday++;
+    $sql = "SELECT b.*, 
+            s.service_name, s.base_price as service_price,
+            c.name as customer_name,
+            v.make, v.model, v.plate_number
+            FROM bookings b
+            LEFT JOIN services s ON b.service_id = s.service_id
+            LEFT JOIN customers c ON b.customer_id = c.customer_id
+            LEFT JOIN vehicles v ON b.vehicle_id = v.vehicle_id
+            WHERE 
+            (
+                (b.$empCol = ?) 
+                OR 
+                (b.$empCol IS NULL AND b.status IN ('Pending', 'Confirmed'))
+            )
+            AND b.status NOT IN ('Cancelled', 'Completed', 'No Show')
+            ORDER BY 
+                CASE WHEN b.status = 'In Progress' THEN 1 ELSE 2 END,
+                b.booking_date ASC, 
+                b.booking_time ASC";
+
+    $stmt = $conn->prepare($sql);
+    $stmt->bind_param("i", $employeeId);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    while ($row = $result->fetch_assoc()) {
+        $tasks[] = $row;
     }
 }
 
-// Get employee statistics
-$totalCompleted = 0;
-$totalRevenue = 0;
+// Calculate Stats for Today
+$today = date('Y-m-d');
+$stats = [
+    'completed' => 0,
+    'in_progress' => 0,
+    'pending' => 0
+];
 
 if ($employeeId) {
-    $statsQuery = "SELECT 
-                   COUNT(*) as total_completed,
-                   SUM(b.total_amount) as total_revenue
-                   FROM bookings b
-                   WHERE b.`$bookingEmployeeCol` = ? AND b.status = 'completed'";
-    $statsStmt = $conn->prepare($statsQuery);
-    $statsStmt->bind_param("i", $employeeId);
-    $statsStmt->execute();
-    $statsResult = $statsStmt->get_result();
-    $stats = $statsResult->fetch_assoc();
+    // Determine column name again for stats
+    $colCheck = $conn->query("SHOW COLUMNS FROM bookings LIKE 'assigned_staff_id'");
+    $empCol = ($colCheck && $colCheck->num_rows > 0) ? 'assigned_staff_id' : 'employee_id';
+
+    // Completed Today
+    $completedSql = "SELECT COUNT(*) as count FROM bookings WHERE $empCol = ? AND status = 'Completed' AND booking_date = ?";
+    $stmt = $conn->prepare($completedSql);
+    $stmt->bind_param("is", $employeeId, $today);
+    $stmt->execute();
+    $stats['completed'] = $stmt->get_result()->fetch_assoc()['count'];
+
+    // In Progress
+    $progSql = "SELECT COUNT(*) as count FROM bookings WHERE $empCol = ? AND status = 'In Progress'";
+    $stmt = $conn->prepare($progSql);
+    $stmt->bind_param("i", $employeeId);
+    $stmt->execute();
+    $stats['in_progress'] = $stmt->get_result()->fetch_assoc()['count'];
     
-    $totalCompleted = $stats['total_completed'] ?? 0;
-    $totalRevenue = $stats['total_revenue'] ?? 0;
-    
-    // Get employee rating
-    $ratingQuery = "SELECT AVG(rating) as avg_rating FROM reviews WHERE employee_id = ?";
-    $ratingStmt = $conn->prepare($ratingQuery);
-    $ratingStmt->bind_param("i", $employeeId);
-    $ratingStmt->execute();
-    $ratingResult = $ratingStmt->get_result();
-    $rating = $ratingResult->fetch_assoc();
-    $avgRating = round($rating['avg_rating'] ?? 4.5, 1);
-} else {
-    $avgRating = 4.5;
+    // Pending (Assigned)
+    $pendSql = "SELECT COUNT(*) as count FROM bookings WHERE $empCol = ? AND status IN ('Pending', 'Confirmed')";
+    $stmt = $conn->prepare($pendSql);
+    $stmt->bind_param("i", $employeeId);
+    $stmt->execute();
+    $stats['pending'] = $stmt->get_result()->fetch_assoc()['count'];
 }
 ?>
 <!DOCTYPE html>
@@ -282,6 +186,7 @@ if ($employeeId) {
             font-weight: 500;
             transition: all 0.3s ease;
             text-decoration: none;
+            font-size: 0.9rem;
         }
 
         .logout-btn:hover {
@@ -289,45 +194,8 @@ if ($employeeId) {
             transform: translateY(-2px);
         }
 
-        .employee-avatar {
-            width: 45px;
-            height: 45px;
-            border-radius: 50%;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            font-size: 1.5rem;
-        }
-
-        .status-indicator {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            padding: 0.5rem 1rem;
-            background: #d4edda;
-            color: #155724;
-            border-radius: 20px;
-            font-size: 0.9rem;
-            font-weight: 500;
-        }
-
-        .status-dot {
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            background: #28a745;
-            animation: pulse 2s infinite;
-        }
-
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-
         .container {
-            max-width: 1400px;
+            max-width: 1200px;
             margin: 0 auto;
             padding: 2rem;
         }
@@ -335,26 +203,25 @@ if ($employeeId) {
         .welcome-section {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
-            padding: 2rem;
+            padding: 2.5rem;
             border-radius: 20px;
             margin-bottom: 2rem;
             box-shadow: 0 10px 30px rgba(102, 126, 234, 0.3);
         }
 
-        .welcome-content {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .welcome-text h1 {
+        .welcome-section h1 {
             font-size: 2rem;
             margin-bottom: 0.5rem;
         }
 
+        .welcome-section p {
+            opacity: 0.9;
+            font-size: 1.1rem;
+        }
+
         .stats-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
             gap: 1.5rem;
             margin-bottom: 2rem;
         }
@@ -364,8 +231,10 @@ if ($employeeId) {
             padding: 1.5rem;
             border-radius: 15px;
             box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
-            text-align: center;
             transition: all 0.3s ease;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
         }
 
         .stat-card:hover {
@@ -373,21 +242,27 @@ if ($employeeId) {
             box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
         }
 
-        .stat-icon {
-            font-size: 2.5rem;
-            margin-bottom: 0.5rem;
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 4px;
+            height: 100%;
+            background: linear-gradient(180deg, #667eea 0%, #764ba2 100%);
         }
 
         .stat-value {
-            font-size: 2rem;
+            font-size: 2.5rem;
             font-weight: bold;
             color: #667eea;
-            margin-bottom: 0.3rem;
+            margin-bottom: 0.2rem;
         }
 
         .stat-label {
             color: #666;
             font-size: 0.9rem;
+            font-weight: 500;
         }
 
         .card {
@@ -395,16 +270,15 @@ if ($employeeId) {
             padding: 2rem;
             border-radius: 15px;
             box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
-            margin-bottom: 2rem;
         }
 
         .card-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
             margin-bottom: 1.5rem;
             padding-bottom: 1rem;
             border-bottom: 2px solid #f0f0f0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
         }
 
         .card-title {
@@ -417,42 +291,69 @@ if ($employeeId) {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 1.2rem;
-            background: #f8f9fa;
+            padding: 1.25rem;
+            border: 1px solid #f0f0f0;
             border-radius: 10px;
             margin-bottom: 1rem;
             transition: all 0.3s ease;
+            background: #fff;
         }
 
         .task-item:hover {
-            background: #e9ecef;
+            border-color: #667eea;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.05);
             transform: translateX(5px);
         }
 
-        .task-info h4 {
-            font-size: 1rem;
-            margin-bottom: 0.3rem;
+        .task-details h4 {
+            font-size: 1.1rem;
+            margin-bottom: 0.4rem;
             color: #333;
         }
 
-        .task-info p {
-            font-size: 0.85rem;
+        .task-meta {
             color: #666;
-        }
-
-        .task-actions {
+            font-size: 0.9rem;
             display: flex;
-            gap: 0.5rem;
+            gap: 1rem;
+            flex-wrap: wrap;
         }
 
-        .btn-start, .btn-complete {
+        .task-meta span {
+            display: flex;
+            align-items: center;
+            gap: 0.3rem;
+        }
+
+        .badge {
+            padding: 0.3rem 0.8rem;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            display: inline-block;
+            margin-bottom: 0.5rem;
+        }
+
+        .badge-date { background: #e3f2fd; color: #0d47a1; }
+        
+        .badge-status-in-progress { background: #e7f3ff; color: #0056b3; }
+        .badge-status-pending { background: #fff3cd; color: #856404; }
+        .badge-status-confirmed { background: #d1fae5; color: #065f46; }
+
+        .badge-assigned { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .badge-unassigned { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+
+        .btn {
             padding: 0.6rem 1.5rem;
-            color: white;
-            border: none;
             border-radius: 25px;
+            border: none;
             cursor: pointer;
-            font-weight: 500;
+            color: white;
+            font-weight: 600;
+            text-decoration: none;
+            display: inline-block;
             transition: all 0.3s ease;
+            font-size: 0.9rem;
         }
 
         .btn-start {
@@ -465,23 +366,13 @@ if ($employeeId) {
         }
 
         .btn-complete {
-            background: #28a745;
+            background: #27ae60;
         }
 
         .btn-complete:hover {
-            background: #218838;
+            background: #219150;
             transform: translateY(-2px);
-        }
-
-        .no-tasks {
-            text-align: center;
-            padding: 3rem;
-            color: #999;
-        }
-
-        .no-tasks-icon {
-            font-size: 4rem;
-            margin-bottom: 1rem;
+            box-shadow: 0 5px 15px rgba(39, 174, 96, 0.4);
         }
 
         .message {
@@ -490,45 +381,18 @@ if ($employeeId) {
             margin-bottom: 1.5rem;
             animation: slideIn 0.3s ease;
         }
-
-        .message.success {
-            background: #d4edda;
-            color: #155724;
-            border: 1px solid #c3e6cb;
-        }
-
-        .message.error {
-            background: #f8d7da;
-            color: #721c24;
-            border: 1px solid #f5c6cb;
-        }
-
+        
         @keyframes slideIn {
-            from {
-                transform: translateY(-20px);
-                opacity: 0;
-            }
-            to {
-                transform: translateY(0);
-                opacity: 1;
-            }
+            from { transform: translateY(-20px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
         }
 
         @media (max-width: 768px) {
-            .welcome-content {
-                flex-direction: column;
-                gap: 1rem;
-            }
-
-            .stats-grid {
-                grid-template-columns: 1fr;
-            }
-
-            .task-item {
-                flex-direction: column;
-                align-items: flex-start;
-                gap: 1rem;
-            }
+            .navbar { padding: 1rem; }
+            .task-item { flex-direction: column; align-items: flex-start; gap: 1rem; }
+            .task-item form { width: 100%; }
+            .btn { width: 100%; text-align: center; }
+            .task-meta { flex-direction: column; gap: 0.3rem; }
         }
     </style>
 </head>
@@ -536,102 +400,104 @@ if ($employeeId) {
     <nav class="navbar">
         <div class="logo">SmartWash</div>
         <div class="employee-info">
-            <div class="status-indicator">
-                <span class="status-dot"></span>
-                <span>On Duty</span>
-            </div>
-            <span>Employee: <?php echo htmlspecialchars($employeeName); ?></span>
-            <div class="employee-avatar">👤</div>
+            <span style="margin-right: 15px; font-weight: 500;">👤 <?php echo htmlspecialchars($employeeName); ?></span>
             <a href="../landing/logout.php" class="logout-btn">Logout</a>
         </div>
     </nav>
 
     <div class="container">
         <?php if (isset($_SESSION['success'])): ?>
-            <div class="message success">
-                <?php echo htmlspecialchars($_SESSION['success']); unset($_SESSION['success']); ?>
+            <div class="message" style="background: #d4edda; color: #155724;">
+                ✅ <?php echo $_SESSION['success']; unset($_SESSION['success']); ?>
             </div>
         <?php endif; ?>
-
         <?php if (isset($_SESSION['error'])): ?>
-            <div class="message error">
-                <?php echo htmlspecialchars($_SESSION['error']); unset($_SESSION['error']); ?>
+            <div class="message" style="background: #f8d7da; color: #721c24;">
+                ❌ <?php echo $_SESSION['error']; unset($_SESSION['error']); ?>
             </div>
         <?php endif; ?>
 
         <div class="welcome-section">
-            <div class="welcome-content">
-                <div class="welcome-text">
-                    <h1>Good <?php echo date('H') < 12 ? 'Morning' : (date('H') < 18 ? 'Afternoon' : 'Evening'); ?>, <?php echo htmlspecialchars($employeeName); ?>! 👋</h1>
-                    <p>You have <?php echo $pendingCount + $inProgressCount; ?> tasks assigned today</p>
-                </div>
-            </div>
+            <h1>Employee Dashboard</h1>
+            <p>Welcome back! You have <strong><?php echo count($tasks); ?></strong> active tasks available.</p>
         </div>
 
         <div class="stats-grid">
             <div class="stat-card">
-                <div class="stat-icon">✅</div>
-                <div class="stat-value"><?php echo $completedToday; ?></div>
+                <div class="stat-value"><?php echo $stats['completed']; ?></div>
                 <div class="stat-label">Completed Today</div>
             </div>
             <div class="stat-card">
-                <div class="stat-icon">🔄</div>
-                <div class="stat-value"><?php echo $inProgressCount; ?></div>
+                <div class="stat-value"><?php echo $stats['in_progress']; ?></div>
                 <div class="stat-label">In Progress</div>
             </div>
             <div class="stat-card">
-                <div class="stat-icon">⏰</div>
-                <div class="stat-value"><?php echo $pendingCount; ?></div>
-                <div class="stat-label">Pending Tasks</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-icon">⭐</div>
-                <div class="stat-value"><?php echo $avgRating; ?></div>
-                <div class="stat-label">Your Rating</div>
+                <div class="stat-value"><?php echo $stats['pending']; ?></div>
+                <div class="stat-label">Assigned Pending</div>
             </div>
         </div>
 
         <div class="card">
             <div class="card-header">
-                <h2 class="card-title">My Tasks for Today</h2>
+                <h2 class="card-title">Active Tasks List</h2>
             </div>
-
+            
             <?php if (empty($tasks)): ?>
-                <div class="no-tasks">
-                    <div class="no-tasks-icon">📋</div>
-                    <h3>No Tasks Assigned Yet</h3>
-                    <p>Check back later or contact your supervisor for task assignments.</p>
+                <div style="text-align: center; padding: 3rem; color: #999;">
+                    <div style="font-size: 3rem; margin-bottom: 1rem;">📋</div>
+                    <h3>No active tasks found</h3>
+                    <p>Great job! There are no pending tasks at the moment.</p>
                 </div>
             <?php else: ?>
                 <?php foreach ($tasks as $task): ?>
+                    <?php 
+                        // Determine badges
+                        $statusClass = 'badge-status-' . strtolower(str_replace(' ', '-', $task['status']));
+                        $isAssignedToMe = (isset($task[$empCol]) && $task[$empCol] == $employeeId);
+                    ?>
                     <div class="task-item">
-                        <div class="task-info">
-                            <h4><?php echo htmlspecialchars($task['service_name'] ?? 'Service'); ?> - <?php echo htmlspecialchars(($task['vehicle_make'] ?? '') . ' ' . ($task['vehicle_model'] ?? 'Vehicle')); ?></h4>
-                            <p>
-                                Customer: <?php echo htmlspecialchars($task['customer_name'] ?? 'N/A'); ?> • 
-                                Time: <?php echo date('g:i A', strtotime($task['booking_time'])); ?> • 
-                                Plate: <?php echo htmlspecialchars($task['plate_number'] ?? 'N/A'); ?>
-                            </p>
+                        <div class="task-details">
+                            <div style="margin-bottom: 8px;">
+                                <span class="badge badge-date">
+                                    📅 <?php 
+                                        $bDate = strtotime($task['booking_date']);
+                                        echo ($bDate == strtotime($today)) ? 'TODAY' : date('M d', $bDate);
+                                    ?> 
+                                    @ <?php echo date('g:i A', strtotime($task['booking_time'])); ?>
+                                </span>
+                                <span class="badge <?php echo $statusClass; ?>">
+                                    <?php echo htmlspecialchars($task['status']); ?>
+                                </span>
+                                <?php if($isAssignedToMe): ?>
+                                    <span class="badge badge-assigned">👤 Assigned to You</span>
+                                <?php else: ?>
+                                    <span class="badge badge-unassigned">⚡ Unassigned</span>
+                                <?php endif; ?>
+                            </div>
+                            
+                            <h4><?php echo htmlspecialchars($task['service_name']); ?> - <?php echo htmlspecialchars($task['make'] . ' ' . $task['model']); ?></h4>
+                            
+                            <div class="task-meta">
+                                <span>🚗 Plate: <?php echo htmlspecialchars($task['plate_number']); ?></span>
+                                <span>👤 Customer: <?php echo htmlspecialchars($task['customer_name']); ?></span>
+                                <span>📍 Bay: <?php echo htmlspecialchars($task['bay_number'] ?? 'Not set'); ?></span>
+                            </div>
                         </div>
+                        
                         <div class="task-actions">
-                            <?php 
-                            $status = strtolower($task['status'] ?? '');
-                            if (in_array($status, ['pending', 'confirmed'])): 
-                            ?>
-                                <form method="POST" action="update_task.php" style="display: inline;">
-                                    <input type="hidden" name="booking_id" value="<?php echo $task[$bookingIdCol]; ?>">
-                                    <input type="hidden" name="action" value="start">
-                                    <button type="submit" class="btn-start">Start</button>
-                                </form>
-                            <?php elseif ($status == 'in progress' || $status == 'in_progress'): ?>
-                                <form method="POST" action="update_task.php" style="display: inline;">
-                                    <input type="hidden" name="booking_id" value="<?php echo $task[$bookingIdCol]; ?>">
+                            <form action="update_task.php" method="POST">
+                                <input type="hidden" name="booking_id" value="<?php echo $task['booking_id']; ?>">
+                                
+                                <?php if ($task['status'] == 'In Progress' && $isAssignedToMe): ?>
                                     <input type="hidden" name="action" value="complete">
-                                    <button type="submit" class="btn-complete">Complete</button>
-                                </form>
-                            <?php else: ?>
-                                <span style="color: #28a745; font-weight: 500;">✓ Completed</span>
-                            <?php endif; ?>
+                                    <button type="submit" class="btn btn-complete">✓ Complete Job</button>
+                                <?php else: ?>
+                                    <input type="hidden" name="action" value="start">
+                                    <button type="submit" class="btn btn-start">
+                                        <?php echo $isAssignedToMe ? '▶ Continue Job' : '✋ Claim & Start'; ?>
+                                    </button>
+                                <?php endif; ?>
+                            </form>
                         </div>
                     </div>
                 <?php endforeach; ?>
@@ -640,6 +506,3 @@ if ($employeeId) {
     </div>
 </body>
 </html>
-<?php
-$conn->close();
-?>

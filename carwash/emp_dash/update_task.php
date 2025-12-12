@@ -1,121 +1,64 @@
 <?php
 session_start();
 
-// Check if user is logged in and is employee
 if (!isset($_SESSION['userEmail']) || $_SESSION['userRole'] !== 'employee') {
     header('Location: ../landing/login/login.php');
     exit;
 }
 
-// Include database connection
-$dbPath = __DIR__ . '/../database/database.php';
-if (file_exists($dbPath)) {
-    include $dbPath;
-    if (!isset($conn) || !$conn || $conn->connect_error) {
-        die("Database connection failed.");
-    }
-} else {
-    die("Database configuration file not found.");
-}
+include __DIR__ . '/../database/database.php';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $bookingId = isset($_POST['booking_id']) ? intval($_POST['booking_id']) : 0;
-    $action = isset($_POST['action']) ? $_POST['action'] : '';
-    
-    if ($bookingId > 0 && in_array($action, ['start', 'complete'])) {
-        // Get database name
-        $dbNameQuery = "SELECT DATABASE() AS dbname";
-        $dbNameResult = $conn->query($dbNameQuery);
-        $dbName = $dbNameResult ? $dbNameResult->fetch_assoc()['dbname'] : 'smartwash_db';
+    $bookingId = intval($_POST['booking_id']);
+    $action = $_POST['action'];
+    $email = $_SESSION['userEmail'];
+
+    // Get Employee ID from email
+    $sql = "SELECT e.employee_id 
+            FROM employees e 
+            JOIN users u ON e.user_id = u.user_id 
+            WHERE u.email = ? LIMIT 1";
+    $stmt = $conn->prepare($sql);
+    $stmt->bind_param("s", $email);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    $emp = $res->fetch_assoc();
+
+    if (!$emp) {
+        $_SESSION['error'] = "Employee record not found.";
+        header('Location: index.php');
+        exit;
+    }
+
+    $employeeId = $emp['employee_id'];
+
+    if ($action === 'start') {
+        // Assign to self and set In Progress
+        $update = "UPDATE bookings SET status = 'In Progress', employee_id = ?, started_at = NOW() WHERE booking_id = ?";
+        $stmt = $conn->prepare($update);
+        $stmt->bind_param("ii", $employeeId, $bookingId);
         
-        // Detect bookings table columns
-        $bookingIdCol = 'booking_id';
-        $bookingEmployeeCol = 'employee_id';
-        
-        $bookingCols = $conn->query("SELECT COLUMN_NAME, COLUMN_KEY FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = '$dbName' AND TABLE_NAME = 'bookings'");
-        if ($bookingCols && $bookingCols->num_rows > 0) {
-            while ($col = $bookingCols->fetch_assoc()) {
-                $colName = $col['COLUMN_NAME'];
-                $lower = strtolower($colName);
-                
-                if ($col['COLUMN_KEY'] === 'PRI') {
-                    $bookingIdCol = $colName;
-                }
-                if (strpos($lower, 'employee') !== false || strpos($lower, 'staff') !== false || strpos($lower, 'assigned') !== false) {
-                    $bookingEmployeeCol = $colName;
-                }
-            }
+        if ($stmt->execute()) {
+            $_SESSION['success'] = "Task started! Get to work.";
+        } else {
+            $_SESSION['error'] = "Error starting task: " . $conn->error;
         }
+
+    } elseif ($action === 'complete') {
+        // Mark Completed
+        $update = "UPDATE bookings SET status = 'Completed', completed_at = NOW(), payment_status = 'Paid' WHERE booking_id = ? AND employee_id = ?";
+        $stmt = $conn->prepare($update);
+        $stmt->bind_param("ii", $bookingId, $employeeId);
         
-        // Get employee ID
-        $employeeEmail = $_SESSION['userEmail'];
-        $employeeId = null;
-        
-        $userQuery = "SELECT * FROM users WHERE email = ? LIMIT 1";
-        $stmt = $conn->prepare($userQuery);
-        $stmt->bind_param("s", $employeeEmail);
-        $stmt->execute();
-        $result = $stmt->get_result();
-        
-        if ($result && $result->num_rows > 0) {
-            $user = $result->fetch_assoc();
-            $userId = $user['user_id'] ?? $user['id'] ?? null;
-            
-            if ($userId) {
-                $empQuery = "SELECT * FROM employees WHERE user_id = ? LIMIT 1";
-                $empStmt = $conn->prepare($empQuery);
-                $empStmt->bind_param("i", $userId);
-                $empStmt->execute();
-                $empResult = $empStmt->get_result();
-                
-                if ($empResult && $empResult->num_rows > 0) {
-                    $emp = $empResult->fetch_assoc();
-                    $employeeId = $emp['employee_id'] ?? $emp['id'] ?? null;
-                }
-            }
+        if ($stmt->execute()) {
+            // Optional: Update employee stats here if not handled by triggers
+            $_SESSION['success'] = "Task completed successfully!";
+        } else {
+            $_SESSION['error'] = "Error completing task: " . $conn->error;
         }
-        
-        if ($action === 'start') {
-            // Update booking status to in_progress and assign employee
-            if ($employeeId) {
-                $updateQuery = "UPDATE bookings SET status = 'In Progress', `$bookingEmployeeCol` = ? WHERE `$bookingIdCol` = ?";
-                $updateStmt = $conn->prepare($updateQuery);
-                $updateStmt->bind_param("ii", $employeeId, $bookingId);
-            } else {
-                $updateQuery = "UPDATE bookings SET status = 'In Progress' WHERE `$bookingIdCol` = ?";
-                $updateStmt = $conn->prepare($updateQuery);
-                $updateStmt->bind_param("i", $bookingId);
-            }
-            
-            if ($updateStmt->execute()) {
-                $_SESSION['success'] = 'Task started successfully!';
-            } else {
-                $_SESSION['error'] = 'Failed to start task: ' . $updateStmt->error;
-            }
-        } elseif ($action === 'complete') {
-            // Update booking status to completed
-            if ($employeeId) {
-                $updateQuery = "UPDATE bookings SET status = 'Completed' WHERE `$bookingIdCol` = ? AND `$bookingEmployeeCol` = ?";
-                $updateStmt = $conn->prepare($updateQuery);
-                $updateStmt->bind_param("ii", $bookingId, $employeeId);
-            } else {
-                $updateQuery = "UPDATE bookings SET status = 'Completed' WHERE `$bookingIdCol` = ?";
-                $updateStmt = $conn->prepare($updateQuery);
-                $updateStmt->bind_param("i", $bookingId);
-            }
-            
-            if ($updateStmt->execute()) {
-                $_SESSION['success'] = 'Task completed successfully!';
-            } else {
-                $_SESSION['error'] = 'Failed to complete task: ' . $updateStmt->error;
-            }
-        }
-    } else {
-        $_SESSION['error'] = 'Invalid request.';
     }
 }
 
-$conn->close();
 header('Location: index.php');
 exit;
 ?>
