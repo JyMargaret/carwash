@@ -45,11 +45,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($conn->query($update)) {
             // Determine Protocol
             $protocol = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? "https" : "http";
-            $domain = $protocol . "://" . $_SERVER['HTTP_HOST'] . dirname($_SERVER['PHP_SELF']);
+            $host = $protocol . "://" . $_SERVER['HTTP_HOST'];
             
-            // Link points to 'login/reset_password.php' assuming that file is in the login folder
-            // If reset_password.php is also in 'landing/', remove '/login' from the string below
-            $resetLink = $domain . "/login/reset_password.php?token=" . $token;
+            // Create reset link - use the full absolute URL
+            $resetLink = $host . "/carwash/landing/reset_password.php?token=" . urlencode($token);
 
             $mail = new PHPMailer(true);
 
@@ -70,16 +69,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $mail->isHTML(true);
                 $mail->Subject = 'Reset Your Password - SmartWash';
                 $mail->Body    = "
-                    <div style='font-family: Arial, sans-serif; padding: 20px; color: #333;'>
-                        <h2 style='color: #667eea;'>Password Reset Request</h2>
-                        <p>We received a request to reset your password. Click the button below to proceed:</p>
-                        <p>
-                            <a href='$resetLink' style='background-color: #667eea; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;'>Reset Password</a>
-                        </p>
-                        <p style='font-size: 12px; color: #777;'>If you did not request this, please ignore this email. Link expires in 1 hour.</p>
+                    <div style='font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f5f7fa; color: #333;'>
+                        <div style='background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);'>
+                            <h2 style='color: #667eea; margin-top: 0;'>🔐 Password Reset Request</h2>
+                            <p style='font-size: 16px; line-height: 1.6;'>We received a request to reset your password. Click the button below to proceed:</p>
+                            
+                            <div style='text-align: center; margin: 30px 0;'>
+                                <a href='" . htmlspecialchars($resetLink) . "' style='background-color: #667eea; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; display: inline-block; font-weight: bold; font-size: 16px;'>Reset Password</a>
+                            </div>
+                            
+                            <p style='font-size: 14px; color: #666; line-height: 1.6;'>Or copy and paste this link in your browser:</p>
+                            <p style='background-color: #f0f0f0; padding: 10px; border-radius: 5px; word-break: break-all; font-size: 12px;'>" . htmlspecialchars($resetLink) . "</p>
+                            
+                            <hr style='border: none; border-top: 1px solid #ddd; margin: 20px 0;'>
+                            <p style='font-size: 12px; color: #999;'>
+                                ⏱️ <strong>Note:</strong> This reset link expires in 1 hour.<br>
+                                If you did not request this, please ignore this email and your password will remain unchanged.
+                            </p>
+                        </div>
+                        <p style='text-align: center; font-size: 12px; color: #999; margin-top: 20px;'>SmartWash © 2025. All rights reserved.</p>
                     </div>
                 ";
-                $mail->AltBody = "Click here to reset: $resetLink";
+                $mail->AltBody = "Reset your password here: $resetLink\n\nThis link expires in 1 hour. If you didn't request this, please ignore this email.";
 
                 $mail->send();
                 $message = "Reset link sent! Please check your email.";

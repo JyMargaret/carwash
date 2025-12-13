@@ -1,6 +1,6 @@
 <?php
 session_start();
-include __DIR__ . '/../../database/database.php';
+include __DIR__ . '/../database/database.php';
 
 $message = '';
 $msgType = '';
@@ -18,7 +18,7 @@ if (!empty($token)) {
     if ($result->num_rows > 0) $validToken = true;
     else { $message = "Invalid or expired reset link."; $msgType = "error"; }
 } else {
-    header('Location: login.php'); exit;
+    header('Location: login/login.php'); exit;
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $validToken) {
@@ -35,7 +35,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $validToken) {
                 $message = "Password updated! Redirecting to login...";
                 $msgType = "success";
                 $validToken = false;
-                header("refresh:3;url=login.php");
+                header("refresh:3;url=login/login.php");
             } else { $message = "Error updating password."; $msgType = "error"; }
         } else { $message = "Password must be at least 6 characters."; $msgType = "error"; }
     } else { $message = "Passwords do not match."; $msgType = "error"; }
