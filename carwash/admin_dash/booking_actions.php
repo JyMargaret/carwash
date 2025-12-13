@@ -9,7 +9,6 @@ session_set_cookie_params([
 ]);
 session_start();
 
-// Check if user is logged in and is admin
 if (!isset($_SESSION['userEmail']) || $_SESSION['userRole'] !== 'admin') {
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         echo json_encode(['success' => false, 'message' => 'Unauthorized']);
@@ -19,7 +18,6 @@ if (!isset($_SESSION['userEmail']) || $_SESSION['userRole'] !== 'admin') {
     exit;
 }
 
-// Include database connection
 $dbPath = __DIR__ . '/../database/database.php';
 if (file_exists($dbPath)) {
     include $dbPath;
@@ -38,7 +36,6 @@ if (file_exists($dbPath)) {
     die("Database configuration file not found.");
 }
 
-// Handle POST requests for actions
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     header('Content-Type: application/json');
     
@@ -52,7 +49,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
         
-        // Delete the booking
         $deleteQuery = "DELETE FROM bookings WHERE booking_id = ?";
         $stmt = $conn->prepare($deleteQuery);
         $stmt->bind_param("i", $bookingId);
@@ -77,7 +73,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
         
-        // Update booking status
         $updateQuery = "UPDATE bookings SET status = ? WHERE booking_id = ?";
         $stmt = $conn->prepare($updateQuery);
         $stmt->bind_param("si", $newStatus, $bookingId);
@@ -93,17 +88,50 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
     
+    if ($action === 'update_payment') {
+        $bookingId = intval($_POST['booking_id'] ?? 0);
+        $paymentStatus = $_POST['payment_status'] ?? 'Paid';
+        
+        if ($bookingId <= 0) {
+            echo json_encode(['success' => false, 'message' => 'Invalid booking ID']);
+            exit;
+        }
+        
+        $dbNameQuery = "SELECT DATABASE() AS dbname";
+        $dbNameResult = $conn->query($dbNameQuery);
+        $dbName = $dbNameResult ? $dbNameResult->fetch_assoc()['dbname'] : 'smartwash_db';
+        
+        $checkCol = $conn->query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = '$dbName' AND TABLE_NAME = 'bookings' AND COLUMN_NAME = 'payment_status'");
+        
+        if (!$checkCol || $checkCol->num_rows === 0) {
+            echo json_encode(['success' => false, 'message' => 'Payment status column not found']);
+            exit;
+        }
+        
+        $updateQuery = "UPDATE bookings SET payment_status = ? WHERE booking_id = ?";
+        $stmt = $conn->prepare($updateQuery);
+        $stmt->bind_param("si", $paymentStatus, $bookingId);
+        
+        if ($stmt->execute()) {
+            echo json_encode(['success' => true, 'message' => 'Payment status updated successfully']);
+        } else {
+            echo json_encode(['success' => false, 'message' => 'Failed to update payment status']);
+        }
+        
+        $stmt->close();
+        $conn->close();
+        exit;
+    }
+    
     echo json_encode(['success' => false, 'message' => 'Invalid action']);
     exit;
 }
 
-// If GET request with edit parameter, redirect to bookings page
 if (isset($_GET['edit'])) {
     header('Location: bookings.php?edit=' . intval($_GET['edit']));
     exit;
 }
 
-// Default redirect to dashboard
 header('Location: index.php');
 exit;
 ?>

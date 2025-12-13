@@ -32,7 +32,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ];
         
         foreach ($settings as $key => $value) {
-            $sql = "INSERT INTO settings (setting_key, setting_value) VALUES ('$key', '$value')
+            // FIXED: Using 'system_settings' table instead of 'settings'
+            $sql = "INSERT INTO system_settings (setting_key, setting_value) VALUES ('$key', '$value')
                     ON DUPLICATE KEY UPDATE setting_value = '$value'";
             $conn->query($sql);
         }
@@ -48,17 +49,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $confirmPassword = $_POST['confirm_password'];
         
         $email = $_SESSION['userEmail'];
-        $sql = "SELECT password FROM users WHERE email = '$email' LIMIT 1";
+        // FIXED: Using 'password_hash' column
+        $sql = "SELECT password_hash FROM users WHERE email = '$email' LIMIT 1";
         $result = $conn->query($sql);
         
         if ($result && $result->num_rows > 0) {
             $user = $result->fetch_assoc();
-            
-            if (password_verify($currentPassword, $user['password']) || $currentPassword === $user['password']) {
+            // FIXED: Verifying against 'password_hash'
+            if (password_verify($currentPassword, $user['password_hash'])) {
                 if ($newPassword === $confirmPassword) {
                     if (strlen($newPassword) >= 6) {
                         $hashedPassword = password_hash($newPassword, PASSWORD_DEFAULT);
-                        $updateSql = "UPDATE users SET password = '$hashedPassword' WHERE email = '$email'";
+                        // FIXED: Updating 'password_hash'
+                        $updateSql = "UPDATE users SET password_hash = '$hashedPassword' WHERE email = '$email'";
                         
                         if ($conn->query($updateSql)) {
                             $message = 'Password changed successfully!';
@@ -98,7 +101,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ];
             
             foreach ($settings as $key => $value) {
-                $sql = "INSERT INTO settings (setting_key, setting_value) VALUES ('$key', '$value')
+                // FIXED: Using 'system_settings'
+                $sql = "INSERT INTO system_settings (setting_key, setting_value) VALUES ('$key', '$value')
                         ON DUPLICATE KEY UPDATE setting_value = '$value'";
                 $conn->query($sql);
             }
@@ -119,7 +123,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ];
         
         foreach ($notifSettings as $key => $value) {
-            $sql = "INSERT INTO settings (setting_key, setting_value) VALUES ('$key', '$value')
+            // FIXED: Using 'system_settings'
+            $sql = "INSERT INTO system_settings (setting_key, setting_value) VALUES ('$key', '$value')
                     ON DUPLICATE KEY UPDATE setting_value = '$value'";
             $conn->query($sql);
         }
@@ -138,7 +143,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ];
         
         foreach ($systemSettings as $key => $value) {
-            $sql = "INSERT INTO settings (setting_key, setting_value) VALUES ('$key', '$value')
+            // FIXED: Using 'system_settings'
+            $sql = "INSERT INTO system_settings (setting_key, setting_value) VALUES ('$key', '$value')
                     ON DUPLICATE KEY UPDATE setting_value = '$value'";
             $conn->query($sql);
         }
@@ -149,12 +155,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // Export all data
     if ($action === 'export_data') {
-        // Determine which tables exist and export their contents as JSON
-        $exportTables = ['bookings','customers','services','staff','users','settings'];
+        // FIXED: Added 'employees' and 'system_settings', removed incorrect names
+        $exportTables = ['bookings', 'customers', 'services', 'employees', 'users', 'system_settings', 'reviews', 'payments'];
         $export = [];
+        
+        // Get DB name dynamically
+        $dbRes = $conn->query("SELECT DATABASE() AS dbname");
+        $dbName = $dbRes->fetch_assoc()['dbname'];
+
         foreach ($exportTables as $t) {
-            // check table exists
-            $tblRes = $conn->query("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '$dbname' AND TABLE_NAME = '$t'");
+            // Check if table exists
+            $tblRes = $conn->query("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '$dbName' AND TABLE_NAME = '$t'");
             if ($tblRes && $tblRes->num_rows > 0) {
                 $rows = [];
                 $res = $conn->query("SELECT * FROM `$t`");
@@ -175,31 +186,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
-    // Deactivate account (admin deactivating their own account)
+    // Deactivate account
     if ($action === 'deactivate_account') {
         $email = $_SESSION['userEmail'] ?? '';
         if ($email) {
-            // Inspect users table columns
-            $colsRes = $conn->query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = '$dbname' AND TABLE_NAME = 'users'");
-            $cols = [];
-            if ($colsRes) {
-                while ($c = $colsRes->fetch_assoc()) { $cols[] = $c['COLUMN_NAME']; }
-            }
-
-            if (in_array('active', $cols)) {
-                $upd = "UPDATE users SET active = 0 WHERE email = '$email'";
-                $ok = $conn->query($upd);
-            } elseif (in_array('status', $cols)) {
-                $upd = "UPDATE users SET status = 'deactivated' WHERE email = '$email'";
-                $ok = $conn->query($upd);
-            } else {
-                // last resort: delete the user row
-                $del = "DELETE FROM users WHERE email = '$email'";
-                $ok = $conn->query($del);
-            }
-
-            if ($ok) {
-                // destroy session and redirect to landing
+            // FIXED: Using 'status' column based on your schema
+            $upd = "UPDATE users SET status = 'inactive' WHERE email = '$email'";
+            if ($conn->query($upd)) {
                 session_unset();
                 session_destroy();
                 header('Location: ../landing/index.php');
@@ -212,9 +205,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// Fetch current settings
+// Fetch current settings (Helper function fixed)
 function getSetting($conn, $key, $default = '') {
-    $sql = "SELECT setting_value FROM settings WHERE setting_key = '$key' LIMIT 1";
+    // FIXED: Using 'system_settings'
+    $sql = "SELECT setting_value FROM system_settings WHERE setting_key = '$key' LIMIT 1";
     $result = $conn->query($sql);
     if ($result && $result->num_rows > 0) {
         $row = $result->fetch_assoc();
@@ -466,6 +460,23 @@ $adminInfo = $adminResult ? $adminResult->fetch_assoc() : [];
             color: white;
         }
 
+        .btn-danger {
+            padding: 0.8rem 1.5rem;
+            background: white;
+            color: #e74c3c;
+            border: 2px solid #e74c3c;
+            border-radius: 25px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            font-size: 1rem;
+        }
+
+        .btn-danger:hover {
+            background: #e74c3c;
+            color: white;
+        }
+
         .message {
             padding: 1rem 1.5rem;
             border-radius: 10px;
@@ -603,7 +614,7 @@ $adminInfo = $adminResult ? $adminResult->fetch_assoc() : [];
     <aside class="sidebar" id="sidebar">
         <div class="logo">SmartWash Admin</div>
         <nav>
-            <div class="menu-item active" onclick="window.location.href='index.php'">
+            <div class="menu-item" onclick="window.location.href='index.php'">
                 <span>Dashboard</span>
             </div>
             <div class="menu-item" onclick="window.location.href='bookings.php'">
@@ -621,7 +632,7 @@ $adminInfo = $adminResult ? $adminResult->fetch_assoc() : [];
             <div class="menu-item" onclick="window.location.href='reports.php'">
                 <span>Reports</span>
             </div>
-            <div class="menu-item" onclick="window.location.href='settings.php'">
+            <div class="menu-item active" onclick="window.location.href='settings.php'">
                 <span>Settings</span>
             </div>
         </nav>
@@ -641,7 +652,6 @@ $adminInfo = $adminResult ? $adminResult->fetch_assoc() : [];
         </div>
         <?php endif; ?>
 
-        <!-- Settings Navigation -->
         <div class="settings-nav">
             <div class="settings-tab active" onclick="showTab(event,'profile')">👤 Profile</div>
             <div class="settings-tab" onclick="showTab(event,'business')">🏢 Business Info</div>
@@ -651,7 +661,6 @@ $adminInfo = $adminResult ? $adminResult->fetch_assoc() : [];
             <div class="settings-tab" onclick="showTab(event,'security')">🔒 Security</div>
         </div>
 
-        <!-- Profile Settings -->
         <div class="card active" id="profile">
             <div class="card-header">
                 <h2 class="card-title">Profile Settings</h2>
@@ -659,13 +668,13 @@ $adminInfo = $adminResult ? $adminResult->fetch_assoc() : [];
             </div>
             
             <div class="profile-avatar">
-                <?php echo strtoupper(substr($adminInfo['name'] ?? 'A', 0, 1)); ?>
+                <?php echo strtoupper(substr($adminInfo['first_name'] ?? 'A', 0, 1)); ?>
             </div>
             
             <div class="info-box">
                 <div class="info-box-title">Administrator Account</div>
                 <div class="info-box-text">
-                    <strong>Name:</strong> <?php echo htmlspecialchars($adminInfo['name'] ?? 'Admin User'); ?><br>
+                    <strong>Name:</strong> <?php echo htmlspecialchars(($adminInfo['first_name'] ?? '') . ' ' . ($adminInfo['last_name'] ?? 'Admin')); ?><br>
                     <strong>Email:</strong> <?php echo htmlspecialchars($adminInfo['email'] ?? $_SESSION['userEmail']); ?><br>
                     <strong>Role:</strong> <?php echo ucfirst($_SESSION['userRole']); ?><br>
                     <strong>Account Created:</strong> <?php echo date('F d, Y', strtotime($adminInfo['created_at'] ?? 'now')); ?>
@@ -673,7 +682,6 @@ $adminInfo = $adminResult ? $adminResult->fetch_assoc() : [];
             </div>
         </div>
 
-        <!-- Business Information -->
         <div class="card" id="business">
             <div class="card-header">
                 <h2 class="card-title">Business Information</h2>
@@ -712,7 +720,6 @@ $adminInfo = $adminResult ? $adminResult->fetch_assoc() : [];
             </form>
         </div>
 
-        <!-- Operating Hours -->
         <div class="card" id="hours">
             <div class="card-header">
                 <h2 class="card-title">Operating Hours</h2>
@@ -759,7 +766,6 @@ $adminInfo = $adminResult ? $adminResult->fetch_assoc() : [];
             </form>
         </div>
 
-        <!-- Notifications -->
         <div class="card" id="notifications">
             <div class="card-header">
                 <h2 class="card-title">Notification Settings</h2>
@@ -813,7 +819,6 @@ $adminInfo = $adminResult ? $adminResult->fetch_assoc() : [];
             </form>
         </div>
 
-        <!-- System Settings -->
         <div class="card" id="system">
             <div class="card-header">
                 <h2 class="card-title">System Settings</h2>
@@ -876,7 +881,6 @@ $adminInfo = $adminResult ? $adminResult->fetch_assoc() : [];
             </form>
         </div>
 
-        <!-- Security Settings -->
         <div class="card" id="security">
             <div class="card-header">
                 <h2 class="card-title">Security Settings</h2>
@@ -934,7 +938,6 @@ $adminInfo = $adminResult ? $adminResult->fetch_assoc() : [];
             </div>
         </div>
 
-            <!-- Hidden forms for export & deactivate actions -->
             <form id="exportForm" method="POST" action="" style="display:none;">
                 <input type="hidden" name="action" value="export_data">
             </form>
@@ -1056,27 +1059,6 @@ $adminInfo = $adminResult ? $adminResult->fetch_assoc() : [];
                 this.setCustomValidity('');
             }
         });
-
-        // Add .btn-danger style dynamically
-        const style = document.createElement('style');
-        style.textContent = `
-            .btn-danger {
-                padding: 0.8rem 1.5rem;
-                background: white;
-                color: #e74c3c;
-                border: 2px solid #e74c3c;
-                border-radius: 25px;
-                cursor: pointer;
-                font-weight: 500;
-                transition: all 0.3s ease;
-                font-size: 1rem;
-            }
-            .btn-danger:hover {
-                background: #e74c3c;
-                color: white;
-            }
-        `;
-        document.head.appendChild(style);
     </script>
 </body>
 </html>
