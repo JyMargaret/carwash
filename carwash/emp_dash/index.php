@@ -375,6 +375,21 @@ if ($employeeId) {
             box-shadow: 0 5px 15px rgba(39, 174, 96, 0.4);
         }
 
+        .btn-messages {
+            background: #3498db;
+            padding: 1rem 2rem;
+            font-size: 1rem;
+            width: 100%;
+            text-align: center;
+            margin-top: 1rem;
+        }
+
+        .btn-messages:hover {
+            background: #2980b9;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(52, 152, 219, 0.4);
+        }
+
         .message {
             padding: 1rem 1.5rem;
             border-radius: 10px;
@@ -435,6 +450,10 @@ if ($employeeId) {
                 <div class="stat-value"><?php echo $stats['pending']; ?></div>
                 <div class="stat-label">Assigned Pending</div>
             </div>
+        </div>
+
+        <div style="margin-bottom: 2rem;">
+            <a href="messages.php" class="btn btn-messages">📧 View Customer Messages</a>
         </div>
 
         <div class="card">
