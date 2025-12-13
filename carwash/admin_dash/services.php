@@ -1,131 +1,319 @@
 <?php
 session_start();
+
+// Check if user is logged in and is admin
 if (!isset($_SESSION['userEmail']) || $_SESSION['userRole'] !== 'admin') {
     header('Location: ../landing/login/login.php');
     exit;
 }
+
+// Include database connection
 include __DIR__ . '/../database/database.php';
 
-// Handle Actions
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $action = $_POST['action'] ?? '';
-    
-    if ($action === 'add_service') {
-        $name = $conn->real_escape_string($_POST['name']);
-        $desc = $conn->real_escape_string($_POST['description']);
-        $price = floatval($_POST['price']);
-        $duration = intval($_POST['duration']);
-        $type = $conn->real_escape_string($_POST['type']);
-        $status = $_POST['status'] === 'active' ? 1 : 0;
-        $icon = $conn->real_escape_string($_POST['icon'] ?? '🚗');
-        
-        // Check for features
-        $features = isset($_POST['features']) ? json_encode(explode(',', $_POST['features'])) : '[]';
+// Get date range from query params or use defaults
+$startDate = isset($_GET['start_date']) ? $_GET['start_date'] : date('Y-m-01');
+$endDate = isset($_GET['end_date']) ? $_GET['end_date'] : date('Y-m-d');
+$reportType = isset($_GET['report_type']) ? $_GET['report_type'] : 'overview';
 
-        $sql = "INSERT INTO services (service_name, description, base_price, duration_minutes, service_type, is_active) 
-                VALUES ('$name', '$desc', $price, $duration, '$type', $status)";
-        
-        if ($conn->query($sql)) {
-            // Note: If you have a separate features table or column, handle it here. 
-            // For now we just insert the main service data based on your schema.
-            header('Location: services.php');
-            exit;
-        } else {
-            $error = "Error adding service: " . $conn->error;
-        }
-    }
-    
-    if ($action === 'update_service') {
-        $id = intval($_POST['service_id']);
-        $name = $conn->real_escape_string($_POST['name']);
-        $desc = $conn->real_escape_string($_POST['description']);
-        $price = floatval($_POST['price']);
-        $duration = intval($_POST['duration']);
-        $type = $conn->real_escape_string($_POST['type']);
-        $status = $_POST['status'] === 'active' ? 1 : 0;
-        
-        $sql = "UPDATE services SET service_name='$name', description='$desc', base_price=$price, 
-                duration_minutes=$duration, service_type='$type', is_active=$status 
-                WHERE service_id=$id";
-                
-        if ($conn->query($sql)) {
-            header('Location: services.php');
-            exit;
-        }
-    }
+// REVENUE STATISTICS
+$revenueQuery = "SELECT 
+                SUM(CASE WHEN b.status = 'Completed' THEN b.final_amount ELSE 0 END) as total_revenue,
+                SUM(CASE WHEN b.status = 'Completed' AND DATE(b.booking_date) = CURDATE() THEN b.final_amount ELSE 0 END) as today_revenue,
+                SUM(CASE WHEN b.status = 'Completed' AND WEEK(b.booking_date) = WEEK(CURDATE()) THEN b.final_amount ELSE 0 END) as week_revenue,
+                SUM(CASE WHEN b.status = 'Completed' AND MONTH(b.booking_date) = MONTH(CURDATE()) THEN b.final_amount ELSE 0 END) as month_revenue,
+                COUNT(CASE WHEN b.status = 'Completed' THEN 1 END) as completed_bookings,
+                COUNT(CASE WHEN b.status = 'Pending' OR b.status = 'Confirmed' THEN 1 END) as pending_bookings,
+                COUNT(CASE WHEN b.status = 'Cancelled' THEN 1 END) as cancelled_bookings
+                FROM bookings b
+                WHERE b.booking_date BETWEEN '$startDate' AND '$endDate'";
+$revenueResult = $conn->query($revenueQuery);
+$revenueStats = $revenueResult ? $revenueResult->fetch_assoc() : [
+    'total_revenue' => 0, 'today_revenue' => 0, 'week_revenue' => 0, 
+    'month_revenue' => 0, 'completed_bookings' => 0, 'pending_bookings' => 0, 'cancelled_bookings' => 0
+];
 
-    if ($action === 'delete_service') {
-        $id = intval($_POST['service_id']);
-        $conn->query("DELETE FROM services WHERE service_id=$id");
-        header('Location: services.php');
-        exit;
-    }
-}
+// TOP SERVICES
+$topServicesQuery = "SELECT s.service_name as name,
+                     COUNT(b.booking_id) as booking_count,
+                     SUM(CASE WHEN b.status = 'Completed' THEN b.final_amount ELSE 0 END) as revenue,
+                     AVG(CASE WHEN b.status = 'Completed' THEN b.final_amount ELSE NULL END) as avg_price
+                     FROM services s
+                     LEFT JOIN bookings b ON s.service_id = b.service_id 
+                        AND b.booking_date BETWEEN '$startDate' AND '$endDate'
+                     GROUP BY s.service_id
+                     ORDER BY revenue DESC
+                     LIMIT 5";
+$topServicesResult = $conn->query($topServicesQuery);
 
-// Fetch Services
-$servicesResult = $conn->query("SELECT * FROM services ORDER BY service_id ASC");
-$services = [];
-while ($row = $servicesResult->fetch_assoc()) {
-    // Determine icon based on type if not stored
-    $row['icon'] = '🚗'; 
-    if(strpos($row['service_name'], 'Premium') !== false) $row['icon'] = '✨';
-    if(strpos($row['service_name'], 'Ultimate') !== false) $row['icon'] = '💎';
-    $services[] = $row;
-}
+// TOP CUSTOMERS
+$topCustomersQuery = "SELECT c.name, 
+                      COALESCE(u.email, 'N/A') as email,
+                      COUNT(b.booking_id) as booking_count,
+                      SUM(CASE WHEN b.status = 'Completed' THEN b.final_amount ELSE 0 END) as total_spent
+                      FROM customers c
+                      LEFT JOIN users u ON c.user_id = u.user_id
+                      LEFT JOIN bookings b ON c.customer_id = b.customer_id 
+                        AND b.booking_date BETWEEN '$startDate' AND '$endDate'
+                      GROUP BY c.customer_id
+                      HAVING booking_count > 0
+                      ORDER BY total_spent DESC
+                      LIMIT 10";
+$topCustomersResult = $conn->query($topCustomersQuery);
+
+// DAILY REVENUE (Last 30 days)
+$dailyRevenueQuery = "SELECT DATE(b.booking_date) as date,
+                      SUM(CASE WHEN b.status = 'Completed' THEN b.final_amount ELSE 0 END) as revenue,
+                      COUNT(CASE WHEN b.status = 'Completed' THEN 1 END) as bookings
+                      FROM bookings b
+                      WHERE b.booking_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+                      GROUP BY DATE(b.booking_date)
+                      ORDER BY date ASC";
+$dailyRevenueResult = $conn->query($dailyRevenueQuery);
+
+// MONTHLY COMPARISON
+$monthlyQuery = "SELECT 
+                DATE_FORMAT(b.booking_date, '%Y-%m') as month,
+                SUM(CASE WHEN b.status = 'Completed' THEN b.final_amount ELSE 0 END) as revenue,
+                COUNT(CASE WHEN b.status = 'Completed' THEN 1 END) as bookings
+                FROM bookings b
+                WHERE b.booking_date >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
+                GROUP BY month
+                ORDER BY month ASC";
+$monthlyResult = $conn->query($monthlyQuery);
+
+// BOOKING STATUS DISTRIBUTION
+$statusQuery = "SELECT status, COUNT(*) as count
+                FROM bookings
+                WHERE booking_date BETWEEN '$startDate' AND '$endDate'
+                GROUP BY status";
+$statusResult = $conn->query($statusQuery);
+
+// PEAK HOURS
+$peakHoursQuery = "SELECT HOUR(booking_time) as hour, COUNT(*) as bookings
+                   FROM bookings
+                   WHERE booking_date BETWEEN '$startDate' AND '$endDate'
+                   GROUP BY hour
+                   ORDER BY hour ASC";
+$peakHoursResult = $conn->query($peakHoursQuery);
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SmartWash - Services Management</title>
+    <title>SmartWash - Reports & Analytics</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+
     <style>
-        /* Keeping original styles */
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f5f7fa; color: #333; display: flex; min-height: 100vh; }
-        .sidebar { width: 260px; background: linear-gradient(180deg, #667eea 0%, #764ba2 100%); color: white; padding: 2rem 0; position: fixed; height: 100vh; overflow-y: auto; transition: transform 0.3s ease; }
-        .logo { font-size: 1.8rem; font-weight: bold; padding: 0 1.5rem; margin-bottom: 2rem; }
-        .menu-item { padding: 1rem 1.5rem; display: flex; align-items: center; gap: 1rem; cursor: pointer; transition: all 0.3s ease; border-left: 4px solid transparent; text-decoration: none; color: white; }
-        .menu-item:hover, .menu-item.active { background: rgba(255, 255, 255, 0.2); border-left-color: white; }
-        .main-content { margin-left: 260px; flex: 1; padding: 2rem; width: calc(100% - 260px); }
-        .header { background: white; padding: 1.5rem 2rem; border-radius: 15px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1); }
-        .header h1 { font-size: 1.8rem; color: #333; }
-        .btn-primary { padding: 0.8rem 1.8rem; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 25px; cursor: pointer; font-weight: 500; transition: all 0.3s ease; font-size: 1rem; }
-        .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4); }
-        .btn-secondary { padding: 0.5rem 1rem; background: white; color: #667eea; border: 2px solid #667eea; border-radius: 20px; cursor: pointer; font-weight: 500; transition: all 0.3s ease; font-size: 0.85rem; }
-        .btn-secondary:hover { background: #667eea; color: white; }
-        .btn-danger { padding: 0.5rem 1rem; background: white; color: #e74c3c; border: 2px solid #e74c3c; border-radius: 20px; cursor: pointer; font-weight: 500; transition: all 0.3s ease; font-size: 0.85rem; }
-        .btn-danger:hover { background: #e74c3c; color: white; }
-        .services-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 1.5rem; margin-bottom: 2rem; }
-        .service-card { background: white; border-radius: 15px; box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1); overflow: hidden; transition: all 0.3s ease; position: relative; }
-        .service-card:hover { transform: translateY(-5px); box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15); }
-        .service-header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 2rem; text-align: center; }
-        .service-icon { font-size: 3rem; margin-bottom: 0.5rem; }
-        .service-name { font-size: 1.4rem; font-weight: bold; margin-bottom: 0.5rem; }
-        .service-price { font-size: 2rem; font-weight: bold; }
-        .service-body { padding: 1.5rem; }
-        .service-description { color: #666; font-size: 0.9rem; margin-bottom: 1rem; line-height: 1.6; min-height: 50px; }
-        .service-stats { display: flex; justify-content: space-around; padding: 1rem 0; border-top: 1px solid #f0f0f0; border-bottom: 1px solid #f0f0f0; margin-bottom: 1rem; }
-        .stat-item { text-align: center; }
-        .stat-value { font-size: 1.2rem; font-weight: bold; color: #667eea; }
-        .stat-label { font-size: 0.75rem; color: #666; margin-top: 0.2rem; }
-        .service-actions { display: flex; gap: 0.5rem; }
-        .status-badge { position: absolute; top: 1rem; right: 1rem; padding: 0.4rem 1rem; border-radius: 20px; font-size: 0.8rem; font-weight: 500; }
-        .status-active { background: #d4edda; color: #155724; }
-        .status-inactive { background: #f8d7da; color: #721c24; }
-        /* Modal Styles */
-        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 0, 0, 0.5); z-index: 2000; align-items: center; justify-content: center; }
-        .modal.active { display: flex; }
-        .modal-content { background: white; padding: 2rem; border-radius: 15px; width: 90%; max-width: 600px; max-height: 90vh; overflow-y: auto; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3); }
-        .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 2px solid #f0f0f0; }
-        .modal-title { font-size: 1.5rem; font-weight: bold; color: #333; }
-        .close-btn { font-size: 1.5rem; cursor: pointer; color: #666; background: none; border: none; padding: 0.5rem; line-height: 1; }
-        .form-group { margin-bottom: 1.5rem; }
-        .form-label { display: block; margin-bottom: 0.5rem; font-weight: 500; color: #333; }
-        .form-input, .form-textarea, .form-select { width: 100%; padding: 0.8rem; border: 2px solid #e0e0e0; border-radius: 10px; font-size: 1rem; transition: border-color 0.3s ease; }
-        .form-input:focus, .form-textarea:focus, .form-select:focus { outline: none; border-color: #667eea; }
-        .modal-actions { display: flex; gap: 1rem; justify-content: flex-end; margin-top: 2rem; padding-top: 1rem; border-top: 2px solid #f0f0f0; }
-        @media (max-width: 768px) { .sidebar { transform: translateX(-100%); } .main-content { margin-left: 0; width: 100%; } .services-grid { grid-template-columns: 1fr; } }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #f5f7fa;
+            color: #333;
+            display: flex;
+            min-height: 100vh;
+        }
+
+        .sidebar {
+            width: 260px;
+            background: linear-gradient(180deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 2rem 0;
+            position: fixed;
+            height: 100vh;
+            overflow-y: auto;
+        }
+
+        .logo {
+            font-size: 1.8rem;
+            font-weight: bold;
+            padding: 0 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .menu-item {
+            padding: 1rem 1.5rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            border-left: 4px solid transparent;
+            text-decoration: none;
+            color: white;
+            display: block;
+        }
+
+        .menu-item:hover,
+        .menu-item.active {
+            background: rgba(255, 255, 255, 0.2);
+            border-left-color: white;
+        }
+
+        .main-content {
+            margin-left: 260px;
+            flex: 1;
+            padding: 2rem;
+            width: calc(100% - 260px);
+        }
+
+        .header {
+            background: white;
+            padding: 1.5rem 2rem;
+            border-radius: 15px;
+            margin-bottom: 2rem;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .filter-section {
+            background: white;
+            padding: 1.5rem 2rem;
+            border-radius: 15px;
+            margin-bottom: 2rem;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+        }
+
+        .filter-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+        }
+
+        .filter-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .filter-group input,
+        .filter-group select {
+            padding: 0.8rem;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+        }
+
+        .btn-primary {
+            padding: 0.8rem 1.5rem;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 25px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+
+        /* Export Buttons */
+        .export-buttons {
+            display: flex;
+            gap: 10px;
+        }
+        .btn-export {
+            padding: 0.6rem 1.2rem;
+            color: white;
+            border: none;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .btn-pdf { background: #e74c3c; }
+        .btn-excel { background: #27ae60; }
+        .btn-word { background: #2980b9; }
+        .btn-export:hover { opacity: 0.9; }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .stat-card {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 15px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+        }
+
+        .stat-value {
+            font-size: 2rem;
+            font-weight: bold;
+            color: #667eea;
+        }
+
+        .card {
+            background: white;
+            padding: 2rem;
+            border-radius: 15px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+            margin-bottom: 2rem;
+        }
+
+        .card-header {
+            margin-bottom: 1.5rem;
+            padding-bottom: 1rem;
+            border-bottom: 2px solid #f0f0f0;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 350px;
+            margin: 1rem 0;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th, td {
+            padding: 1rem;
+            text-align: left;
+            border-bottom: 1px solid #f0f0f0;
+        }
+
+        th {
+            background: #f8f9fa;
+            font-weight: 600;
+            color: #666;
+        }
+
+        .content-grid {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 2rem;
+            margin-bottom: 2rem;
+        }
+
+        @media (max-width: 1024px) {
+            .content-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .sidebar {
+                transform: translateX(-100%);
+            }
+            .main-content {
+                margin-left: 0;
+                width: 100%;
+            }
+            .header {
+                flex-direction: column;
+                gap: 1rem;
+                align-items: flex-start;
+            }
+        }
     </style>
 </head>
 <body>
@@ -135,9 +323,9 @@ while ($row = $servicesResult->fetch_assoc()) {
             <a href="index.php" class="menu-item">Dashboard</a>
             <a href="bookings.php" class="menu-item">Bookings</a>
             <a href="customers.php" class="menu-item">Customers</a>
-            <a href="services.php" class="menu-item active">Services</a>
+            <a href="services.php" class="menu-item">Services</a>
             <a href="staff.php" class="menu-item">Staff</a>
-            <a href="reports.php" class="menu-item">Reports</a>
+            <a href="reports.php" class="menu-item active">Reports</a>
             <a href="settings.php" class="menu-item">Settings</a>
         </nav>
     </aside>
@@ -145,141 +333,327 @@ while ($row = $servicesResult->fetch_assoc()) {
     <main class="main-content">
         <div class="header">
             <div>
-                <h1>Services Management</h1>
-                <p style="color: #666; margin-top: 0.3rem;">Manage your car wash services and pricing</p>
+                <h1>Reports & Analytics</h1>
+                <p style="color: #666; margin-top: 0.3rem;">Comprehensive business insights</p>
             </div>
-            <button class="btn-primary" onclick="openAddModal()">+ Add New Service</button>
+            <div class="export-buttons">
+                <button onclick="exportToPDF()" class="btn-export btn-pdf">📄 PDF</button>
+                <button onclick="exportToExcel()" class="btn-export btn-excel">📊 Excel</button>
+                <button onclick="exportToWord()" class="btn-export btn-word">📝 Word</button>
+            </div>
         </div>
 
-        <div class="services-grid" id="servicesGrid">
-            <?php foreach ($services as $svc): ?>
-                <div class="service-card">
-                    <span class="status-badge status-<?php echo $svc['is_active'] ? 'active' : 'inactive'; ?>">
-                        <?php echo $svc['is_active'] ? 'Active' : 'Inactive'; ?>
-                    </span>
-                    <div class="service-header">
-                        <div class="service-icon"><?php echo $svc['icon']; ?></div>
-                        <div class="service-name"><?php echo htmlspecialchars($svc['service_name']); ?></div>
-                        <div class="service-price">₱<?php echo number_format($svc['base_price'], 2); ?></div>
+        <div class="filter-section">
+            <form method="GET">
+                <div class="filter-grid">
+                    <div class="filter-group">
+                        <label>Start Date</label>
+                        <input type="date" name="start_date" value="<?php echo $startDate; ?>">
                     </div>
-                    <div class="service-body">
-                        <p class="service-description"><?php echo htmlspecialchars($svc['description']); ?></p>
-                        <div class="service-stats">
-                            <div class="stat-item">
-                                <div class="stat-value"><?php echo $svc['duration_minutes']; ?></div>
-                                <div class="stat-label">Minutes</div>
-                            </div>
-                            <div class="stat-item">
-                                <div class="stat-value"><?php echo $svc['service_type']; ?></div>
-                                <div class="stat-label">Type</div>
-                            </div>
-                        </div>
-                        <div class="service-actions">
-                            <button class="btn-secondary" style="flex: 1" onclick='editService(<?php echo json_encode($svc); ?>)'>Edit</button>
-                            <form method="POST" onsubmit="return confirm('Delete this service?');" style="display:inline;">
-                                <input type="hidden" name="action" value="delete_service">
-                                <input type="hidden" name="service_id" value="<?php echo $svc['service_id']; ?>">
-                                <button type="submit" class="btn-danger">Delete</button>
-                            </form>
-                        </div>
+                    <div class="filter-group">
+                        <label>End Date</label>
+                        <input type="date" name="end_date" value="<?php echo $endDate; ?>">
                     </div>
-                </div>
-            <?php endforeach; ?>
-        </div>
-    </main>
-
-    <div class="modal" id="serviceModal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h2 class="modal-title" id="modalTitle">Add New Service</h2>
-                <button class="close-btn" onclick="closeModal()">&times;</button>
-            </div>
-            <form id="serviceForm" method="POST">
-                <input type="hidden" name="action" id="formAction" value="add_service">
-                <input type="hidden" name="service_id" id="serviceId">
-                
-                <div class="form-group">
-                    <label class="form-label">Service Name</label>
-                    <input type="text" class="form-input" name="name" id="serviceName" required>
-                </div>
-                
-                <div class="form-group">
-                    <label class="form-label">Price (₱)</label>
-                    <input type="number" class="form-input" name="price" id="servicePrice" required min="0" step="0.01">
-                </div>
-                
-                <div class="form-group">
-                    <label class="form-label">Duration (minutes)</label>
-                    <input type="number" class="form-input" name="duration" id="serviceDuration" required min="0">
-                </div>
-                
-                <div class="form-group">
-                    <label class="form-label">Type</label>
-                    <select class="form-select" name="type" id="serviceType">
-                        <option value="Basic">Basic</option>
-                        <option value="Premium">Premium</option>
-                        <option value="Ultimate">Ultimate</option>
-                        <option value="Custom">Custom</option>
-                    </select>
-                </div>
-
-                <div class="form-group">
-                    <label class="form-label">Description</label>
-                    <textarea class="form-textarea" name="description" id="serviceDescription" required></textarea>
-                </div>
-                
-                <div class="form-group">
-                    <label class="form-label">Icon (Emoji)</label>
-                    <input type="text" class="form-input" name="icon" id="serviceIcon" placeholder="🚗">
-                </div>
-                
-                <div class="form-group">
-                    <label class="form-label">Status</label>
-                    <select class="form-select" name="status" id="serviceStatus" required>
-                        <option value="active">Active</option>
-                        <option value="inactive">Inactive</option>
-                    </select>
-                </div>
-                
-                <div class="modal-actions">
-                    <button type="button" class="btn-secondary" onclick="closeModal()">Cancel</button>
-                    <button type="submit" class="btn-primary">Save Service</button>
+                    <div class="filter-group">
+                        <label>Report Type</label>
+                        <select name="report_type">
+                            <option value="overview">Overview</option>
+                            <option value="revenue">Revenue</option>
+                            <option value="services">Services</option>
+                            <option value="customers">Customers</option>
+                        </select>
+                    </div>
+                    <div class="filter-group" style="align-self: end;">
+                        <button type="submit" class="btn-primary">Generate Report</button>
+                    </div>
                 </div>
             </form>
         </div>
-    </div>
+
+        <div id="printableArea">
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-value">₱<?php echo number_format($revenueStats['total_revenue'], 2); ?></div>
+                    <div class="stat-label">Total Revenue</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">₱<?php echo number_format($revenueStats['today_revenue'], 2); ?></div>
+                    <div class="stat-label">Today's Revenue</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">₱<?php echo number_format($revenueStats['week_revenue'], 2); ?></div>
+                    <div class="stat-label">This Week</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">₱<?php echo number_format($revenueStats['month_revenue'], 2); ?></div>
+                    <div class="stat-label">This Month</div>
+                </div>
+            </div>
+
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-value"><?php echo $revenueStats['completed_bookings']; ?></div>
+                    <div class="stat-label">Completed Bookings</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value"><?php echo $revenueStats['pending_bookings']; ?></div>
+                    <div class="stat-label">Pending Bookings</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value"><?php echo $revenueStats['cancelled_bookings']; ?></div>
+                    <div class="stat-label">Cancelled Bookings</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">₱<?php 
+                        $avg = $revenueStats['completed_bookings'] > 0 
+                            ? $revenueStats['total_revenue'] / $revenueStats['completed_bookings'] 
+                            : 0;
+                        echo number_format($avg, 2); 
+                    ?></div>
+                    <div class="stat-label">Average Transaction</div>
+                </div>
+            </div>
+
+            <div class="content-grid">
+                <div class="card">
+                    <div class="card-header">
+                        <h2>Daily Revenue Trend (Last 30 Days)</h2>
+                    </div>
+                    <div class="chart-container">
+                        <canvas id="dailyChart"></canvas>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h2>Booking Status</h2>
+                    </div>
+                    <div class="chart-container">
+                        <canvas id="statusChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h2>Top Services</h2>
+                </div>
+                <table id="servicesTable">
+                    <thead>
+                        <tr>
+                            <th>Service</th>
+                            <th>Bookings</th>
+                            <th>Revenue</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if ($topServicesResult && $topServicesResult->num_rows > 0): ?>
+                            <?php while ($service = $topServicesResult->fetch_assoc()): ?>
+                            <tr>
+                                <td><?php echo htmlspecialchars($service['name']); ?></td>
+                                <td><?php echo $service['booking_count']; ?></td>
+                                <td><strong>₱<?php echo number_format($service['revenue'], 2); ?></strong></td>
+                            </tr>
+                            <?php endwhile; ?>
+                        <?php else: ?>
+                            <tr><td colspan="3" style="text-align: center;">No data available</td></tr>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h2>Top Customers</h2>
+                </div>
+                <table id="customersTable">
+                    <thead>
+                        <tr>
+                            <th>Customer</th>
+                            <th>Email</th>
+                            <th>Bookings</th>
+                            <th>Total Spent</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if ($topCustomersResult && $topCustomersResult->num_rows > 0): ?>
+                            <?php while ($customer = $topCustomersResult->fetch_assoc()): ?>
+                            <tr>
+                                <td><?php echo htmlspecialchars($customer['name']); ?></td>
+                                <td><?php echo htmlspecialchars($customer['email']); ?></td>
+                                <td><?php echo $customer['booking_count']; ?></td>
+                                <td><strong>₱<?php echo number_format($customer['total_spent'], 2); ?></strong></td>
+                            </tr>
+                            <?php endwhile; ?>
+                        <?php else: ?>
+                            <tr><td colspan="4" style="text-align: center;">No data available</td></tr>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </main>
 
     <script>
-        function openAddModal() {
-            document.getElementById('serviceForm').reset();
-            document.getElementById('formAction').value = 'add_service';
-            document.getElementById('modalTitle').textContent = 'Add New Service';
-            document.getElementById('serviceModal').classList.add('active');
+        // --- Export Functions ---
+        
+        // 1. Export to PDF
+        function exportToPDF() {
+            const element = document.getElementById('printableArea');
+            const opt = {
+                margin: 0.5,
+                filename: 'SmartWash_Report_<?php echo date("Y-m-d"); ?>.pdf',
+                image: { type: 'jpeg', quality: 0.98 },
+                html2canvas: { scale: 2 },
+                jsPDF: { unit: 'in', format: 'letter', orientation: 'portrait' }
+            };
+            html2pdf().set(opt).from(element).save();
         }
 
-        function editService(service) {
-            document.getElementById('formAction').value = 'update_service';
-            document.getElementById('serviceId').value = service.service_id;
-            document.getElementById('serviceName').value = service.service_name;
-            document.getElementById('servicePrice').value = service.base_price;
-            document.getElementById('serviceDuration').value = service.duration_minutes;
-            document.getElementById('serviceDescription').value = service.description;
-            document.getElementById('serviceType').value = service.service_type;
-            document.getElementById('serviceStatus').value = service.is_active == 1 ? 'active' : 'inactive';
-            
-            document.getElementById('modalTitle').textContent = 'Edit Service';
-            document.getElementById('serviceModal').classList.add('active');
-        }
+        // 2. Export to Excel
+        function exportToExcel() {
+            // Create a new workbook
+            const wb = XLSX.utils.book_new();
 
-        function closeModal() {
-            document.getElementById('serviceModal').classList.remove('active');
-        }
-
-        window.onclick = function(event) {
-            if (event.target == document.getElementById('serviceModal')) {
-                closeModal();
+            // Export Services Table
+            const servicesTable = document.getElementById('servicesTable');
+            if(servicesTable) {
+                const ws1 = XLSX.utils.table_to_sheet(servicesTable);
+                XLSX.utils.book_append_sheet(wb, ws1, "Top Services");
             }
+
+            // Export Customers Table
+            const customersTable = document.getElementById('customersTable');
+            if(customersTable) {
+                const ws2 = XLSX.utils.table_to_sheet(customersTable);
+                XLSX.utils.book_append_sheet(wb, ws2, "Top Customers");
+            }
+
+            // Save file
+            XLSX.writeFile(wb, 'SmartWash_Report_<?php echo date("Y-m-d"); ?>.xlsx');
         }
+
+        // 3. Export to Word (Basic HTML Method)
+        function exportToWord() {
+            // Clone the printable area to modify it for export without changing DOM
+            const element = document.getElementById('printableArea').cloneNode(true);
+            
+            // Remove charts for Word export (Canvas doesn't export well via simple HTML)
+            // Note: For advanced chart export to Word, images need to be generated separately.
+            const charts = element.querySelectorAll('canvas');
+            charts.forEach(c => c.parentNode.innerHTML = '<i>[Charts not available in .doc export. Please use PDF]</i>');
+
+            const header = "<html xmlns:o='urn:schemas-microsoft-com:office:office' "+
+                    "xmlns:w='urn:schemas-microsoft-com:office:word' "+
+                    "xmlns='http://www.w3.org/TR/REC-html40'>"+
+                    "<head><meta charset='utf-8'><title>SmartWash Report</title></head><body>";
+            const footer = "</body></html>";
+            
+            const sourceHTML = header + element.innerHTML + footer;
+            const source = 'data:application/vnd.ms-word;charset=utf-8,' + encodeURIComponent(sourceHTML);
+            
+            const fileDownload = document.createElement("a");
+            document.body.appendChild(fileDownload);
+            fileDownload.href = source;
+            fileDownload.download = 'SmartWash_Report_<?php echo date("Y-m-d"); ?>.doc';
+            fileDownload.click();
+            document.body.removeChild(fileDownload);
+        }
+
+        // --- Chart Configurations ---
+        
+        // Daily Revenue Chart
+        const dailyCtx = document.getElementById('dailyChart').getContext('2d');
+        const dailyData = {
+            labels: [
+                <?php 
+                if ($dailyRevenueResult) {
+                    mysqli_data_seek($dailyRevenueResult, 0);
+                    while ($day = $dailyRevenueResult->fetch_assoc()) {
+                        echo "'" . date('M d', strtotime($day['date'])) . "',";
+                    }
+                }
+                ?>
+            ],
+            datasets: [{
+                label: 'Revenue (₱)',
+                data: [
+                    <?php 
+                    if ($dailyRevenueResult) {
+                        mysqli_data_seek($dailyRevenueResult, 0);
+                        while ($day = $dailyRevenueResult->fetch_assoc()) {
+                            echo $day['revenue'] . ',';
+                        }
+                    }
+                    ?>
+                ],
+                borderColor: '#667eea',
+                backgroundColor: 'rgba(102, 126, 234, 0.1)',
+                tension: 0.4,
+                fill: true
+            }]
+        };
+
+        new Chart(dailyCtx, {
+            type: 'line',
+            data: dailyData,
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: true, position: 'top' }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        ticks: { callback: function(value) { return '₱' + value.toLocaleString(); } }
+                    }
+                }
+            }
+        });
+
+        // Status Chart
+        const statusCtx = document.getElementById('statusChart').getContext('2d');
+        const statusData = {
+            labels: [
+                <?php 
+                if ($statusResult) {
+                    mysqli_data_seek($statusResult, 0);
+                    while ($status = $statusResult->fetch_assoc()) {
+                        echo "'" . ucfirst($status['status']) . "',";
+                    }
+                }
+                ?>
+            ],
+            datasets: [{
+                data: [
+                    <?php 
+                    if ($statusResult) {
+                        mysqli_data_seek($statusResult, 0);
+                        while ($status = $statusResult->fetch_assoc()) {
+                            echo $status['count'] . ',';
+                        }
+                    }
+                    ?>
+                ],
+                backgroundColor: ['#27ae60', '#f39c12', '#3498db', '#e74c3c']
+            }]
+        };
+
+        new Chart(statusCtx, {
+            type: 'doughnut',
+            data: statusData,
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: true, position: 'bottom' }
+                }
+            }
+        });
     </script>
 </body>
 </html>
+<?php
+$conn->close();
+?>
