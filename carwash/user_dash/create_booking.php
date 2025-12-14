@@ -8,7 +8,6 @@ if (!isset($_SESSION['userEmail']) || $_SESSION['userRole'] !== 'customer') {
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // Use correct path - go up one level to carwash, then into database
     include __DIR__ . '/../database/database.php';
     
     $userId = $_SESSION['userId'];
@@ -38,6 +37,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $serviceType = $conn->real_escape_string($_POST['service_type']);
     $bookingDate = $conn->real_escape_string($_POST['booking_date']);
     $bookingTime = $conn->real_escape_string($_POST['booking_time']);
+    $paymentMethod = isset($_POST['payment_method']) ? $conn->real_escape_string($_POST['payment_method']) : 'Cash';
     
     // Validate inputs
     if (!$vehicleId || !$serviceType || !$bookingDate || !$bookingTime) {
@@ -105,14 +105,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
     
-    // Insert booking
+    // Insert booking with payment method
     $insertQuery = "INSERT INTO bookings (customer_id, vehicle_id, service_id, booking_date, booking_time, 
-                    status, bay_number, total_amount, final_amount, payment_status, created_at) 
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', NOW())";
+                    status, bay_number, total_amount, final_amount, payment_status, payment_method, created_at) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, NOW())";
     
     $stmt = $conn->prepare($insertQuery);
-    $stmt->bind_param("iiissssdd", $customerId, $vehicleId, $serviceId, $bookingDate, $bookingTime, 
-                      $status, $availableBay, $price, $price);
+    $stmt->bind_param("iiissssdds", $customerId, $vehicleId, $serviceId, $bookingDate, $bookingTime, 
+                      $status, $availableBay, $price, $price, $paymentMethod);
     
     if ($stmt->execute()) {
         // Award loyalty points (10 points per booking)
@@ -121,7 +121,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $pointsStmt->bind_param("i", $customerId);
         $pointsStmt->execute();
         
-        $_SESSION['success'] = 'Booking created successfully! Assigned to ' . $availableBay;
+        $_SESSION['success'] = 'Booking created successfully! Assigned to ' . $availableBay . ' with ' . $paymentMethod . ' payment.';
     } else {
         $_SESSION['error'] = 'Failed to create booking: ' . $stmt->error;
     }
