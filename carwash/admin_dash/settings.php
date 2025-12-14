@@ -577,9 +577,19 @@ $adminInfo = $adminResult ? $adminResult->fetch_assoc() : [];
             z-index: 1000;
         }
 
+        @media (max-width: 1024px) {
+            .form-row { grid-template-columns: 1fr; }
+            .hours-row { grid-template-columns: 1fr; }
+            table { font-size: 0.9rem; }
+            th, td { padding: 0.75rem; }
+        }
+
         @media (max-width: 768px) {
             .sidebar {
                 transform: translateX(-100%);
+                position: fixed;
+                z-index: 1001;
+                width: 260px;
             }
 
             .sidebar.active {
@@ -589,8 +599,11 @@ $adminInfo = $adminResult ? $adminResult->fetch_assoc() : [];
             .main-content {
                 margin-left: 0;
                 width: 100%;
+                padding: 1rem;
             }
 
+            .header { padding: 1rem; }
+            .header h1 { font-size: 1.5rem; }
             .form-row {
                 grid-template-columns: 1fr;
             }
@@ -601,12 +614,27 @@ $adminInfo = $adminResult ? $adminResult->fetch_assoc() : [];
             }
 
             .settings-nav {
-                flex-wrap: nowrap;
+                flex-wrap: wrap;
+                gap: 0.5rem;
             }
 
             .mobile-menu-btn {
                 display: block;
             }
+
+            .card { padding: 1rem; }
+            table { font-size: 0.8rem; }
+            th, td { padding: 0.5rem; }
+            .btn-primary { padding: 0.5rem 1rem; font-size: 0.9rem; }
+        }
+
+        @media (max-width: 480px) {
+            .main-content { padding: 0.5rem; }
+            .header h1 { font-size: 1.2rem; }
+            .card { padding: 0.75rem; }
+            table { font-size: 0.7rem; }
+            th, td { padding: 0.4rem; }
+            .settings-nav { gap: 0.25rem; }
         }
     </style>
 </head>

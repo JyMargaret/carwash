@@ -4,6 +4,8 @@ session_start();
 if (!isset($_SESSION['userEmail']) || $_SESSION['userRole'] !== 'admin') { header('Location: ../landing/login/login.php'); exit; }
 include __DIR__ . '/../database/database.php';
 
+$current_page = 'bookings';
+
 // Detect employees table name (staff or employees)
 $empTable = 'employees'; 
 $empIdCol = 'employee_id';
@@ -43,17 +45,109 @@ if($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['a
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SmartWash - Bookings Management</title>
     <style>
-        /* Original Styles Preserved */
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f5f7fa; color: #333; display: flex; min-height: 100vh; }
-        .sidebar { width: 260px; background: linear-gradient(180deg, #667eea 0%, #764ba2 100%); color: white; padding: 2rem 0; position: fixed; height: 100vh; overflow-y: auto; transition: transform 0.3s ease; }
-        .logo { font-size: 1.8rem; font-weight: bold; padding: 0 1.5rem; margin-bottom: 2rem; }
-        .menu-item { padding: 1rem 1.5rem; display: flex; align-items: center; gap: 1rem; cursor: pointer; transition: all 0.3s ease; border-left: 4px solid transparent; text-decoration: none; color: white; }
-        .menu-item:hover, .menu-item.active { background: rgba(255, 255, 255, 0.2); border-left-color: white; }
+        
+        /* SIDEBAR STYLES */
+        .admin-sidebar {
+            width: 260px;
+            background: linear-gradient(180deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 2rem 0;
+            position: fixed;
+            height: 100vh;
+            overflow-y: auto;
+            transition: transform 0.3s ease;
+            z-index: 999;
+            left: 0;
+            top: 0;
+        }
+
+        .admin-sidebar .logo {
+            font-size: 1.8rem;
+            font-weight: bold;
+            padding: 0 1.5rem;
+            margin-bottom: 2rem;
+            letter-spacing: 0.5px;
+        }
+
+        .admin-sidebar nav { display: flex; flex-direction: column; }
+
+        .admin-sidebar .menu-item {
+            padding: 1rem 1.5rem;
+            display: flex;
+            align-items: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            border-left: 4px solid transparent;
+            text-decoration: none;
+            color: white;
+            font-size: 1rem;
+            position: relative;
+        }
+
+        .admin-sidebar .menu-item:hover {
+            background: rgba(255, 255, 255, 0.15);
+            border-left-color: rgba(255, 255, 255, 0.5);
+        }
+
+        .admin-sidebar .menu-item.active {
+            background: rgba(255, 255, 255, 0.2);
+            border-left-color: white;
+            font-weight: 600;
+        }
+
+        .admin-sidebar .menu-item.active::after {
+            content: '';
+            position: absolute;
+            right: 1rem;
+            width: 8px;
+            height: 8px;
+            background: white;
+            border-radius: 50%;
+        }
+
+        .mobile-menu-toggle {
+            display: none;
+            position: fixed;
+            top: 1rem;
+            left: 1rem;
+            width: 50px;
+            height: 50px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            cursor: pointer;
+            z-index: 1001;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+            font-size: 1.5rem;
+        }
+
+        .sidebar-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 998;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+
+        .sidebar-overlay.active { display: block; opacity: 1; }
+
+        .admin-sidebar::-webkit-scrollbar { width: 6px; }
+        .admin-sidebar::-webkit-scrollbar-track { background: rgba(255, 255, 255, 0.1); }
+        .admin-sidebar::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.3); border-radius: 3px; }
+
         .main-content { margin-left: 260px; flex: 1; padding: 2rem; width: calc(100% - 260px); }
-        .header { background: white; padding: 1.5rem 2rem; border-radius: 15px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1); }
+        .header { background: white; padding: 1.5rem 2rem; border-radius: 15px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
         .header h1 { font-size: 1.8rem; color: #333; }
         .card { background: white; padding: 2rem; border-radius: 15px; box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1); margin-bottom: 2rem; }
         .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 2px solid #f0f0f0; }
@@ -72,22 +166,31 @@ if($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['a
         .status-cancelled { background: #f8d7da; color: #721c24; }
         .btn-secondary { padding: 0.4rem 0.8rem; background: #667eea; color: white; border: none; border-radius: 15px; cursor: pointer; font-size: 0.8rem; }
         .btn-danger { padding: 0.4rem 0.8rem; background: #e74c3c; color: white; border: none; border-radius: 15px; cursor: pointer; font-size: 0.8rem; }
-        @media (max-width: 768px) { .sidebar { transform: translateX(-100%); } .main-content { margin-left: 0; width: 100%; } }
+        
+        @media (max-width: 768px) { 
+            .admin-sidebar { transform: translateX(-100%); }
+            .admin-sidebar.active { transform: translateX(0); }
+            .mobile-menu-toggle { display: flex; align-items: center; justify-content: center; }
+            .main-content { margin-left: 0 !important; width: 100% !important; }
+        }
     </style>
 </head>
 <body>
-    <aside class="sidebar">
+    <aside class="admin-sidebar" id="adminSidebar">
         <div class="logo">SmartWash Admin</div>
         <nav>
-            <a href="index.php" class="menu-item">Dashboard</a>
-            <a href="bookings.php" class="menu-item active">Bookings</a>
-            <a href="customers.php" class="menu-item">Customers</a>
-            <a href="services.php" class="menu-item">Services</a>
-            <a href="staff.php" class="menu-item">Staff</a>
-            <a href="reports.php" class="menu-item">Reports</a>
-            <a href="settings.php" class="menu-item">Settings</a>
+            <a href="index.php" class="menu-item <?php echo ($current_page === 'index') ? 'active' : ''; ?>">Dashboard</a>
+            <a href="bookings.php" class="menu-item <?php echo ($current_page === 'bookings') ? 'active' : ''; ?>">Bookings</a>
+            <a href="customers.php" class="menu-item <?php echo ($current_page === 'customers') ? 'active' : ''; ?>">Customers</a>
+            <a href="services.php" class="menu-item <?php echo ($current_page === 'services') ? 'active' : ''; ?>">Services</a>
+            <a href="staff.php" class="menu-item <?php echo ($current_page === 'staff') ? 'active' : ''; ?>">Staff</a>
+            <a href="reports.php" class="menu-item <?php echo ($current_page === 'reports') ? 'active' : ''; ?>">Reports</a>
+            <a href="settings.php" class="menu-item <?php echo ($current_page === 'settings') ? 'active' : ''; ?>">Settings</a>
         </nav>
     </aside>
+
+    <button class="mobile-menu-toggle" id="mobileMenuToggle" onclick="toggleSidebar()">☰</button>
+    <div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
 
     <main class="main-content">
         <div class="header">
@@ -153,5 +256,47 @@ if($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['a
             </div>
         </div>
     </main>
+
+    <script>
+        function toggleSidebar() {
+            const sidebar = document.getElementById('adminSidebar');
+            const overlay = document.getElementById('sidebarOverlay');
+            const toggle = document.getElementById('mobileMenuToggle');
+            
+            sidebar.classList.toggle('active');
+            overlay.classList.toggle('active');
+            toggle.innerHTML = sidebar.classList.contains('active') ? '✕' : '☰';
+        }
+
+        function closeSidebar() {
+            const sidebar = document.getElementById('adminSidebar');
+            const overlay = document.getElementById('sidebarOverlay');
+            const toggle = document.getElementById('mobileMenuToggle');
+            
+            sidebar.classList.remove('active');
+            overlay.classList.remove('active');
+            toggle.innerHTML = '☰';
+        }
+
+        document.querySelectorAll('.menu-item').forEach(item => {
+            item.addEventListener('click', function() {
+                if (window.innerWidth <= 768) {
+                    closeSidebar();
+                }
+            });
+        });
+
+        window.addEventListener('resize', function() {
+            if (window.innerWidth > 768) {
+                closeSidebar();
+            }
+        });
+
+        document.addEventListener('keydown', function(event) {
+            if (event.key === 'Escape') {
+                closeSidebar();
+            }
+        });
+    </script>
 </body>
 </html>

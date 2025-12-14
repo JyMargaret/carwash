@@ -9,13 +9,11 @@ session_set_cookie_params([
 ]);
 session_start();
 
-// Check if user is logged in and is admin
 if (!isset($_SESSION['userEmail']) || $_SESSION['userRole'] !== 'admin') {
     header('Location: ../landing/login/login.php');
     exit;
 }
 
-// Include database connection
 $dbPath = __DIR__ . '/../database/database.php';
 if (file_exists($dbPath)) {
     include $dbPath;
@@ -26,15 +24,14 @@ if (file_exists($dbPath)) {
     die("Database configuration file not found.");
 }
 
+$current_page = 'bookings';
 $adminEmail = $_SESSION['userEmail'];
 $adminName = $_SESSION['userName'] ?? 'Admin';
 
-// Get database name
 $dbNameQuery = "SELECT DATABASE() AS dbname";
 $dbNameResult = $conn->query($dbNameQuery);
 $dbName = $dbNameResult ? $dbNameResult->fetch_assoc()['dbname'] : 'smartwash_db';
 
-// Detect column names
 $bookingIdCol = 'booking_id';
 $bookingServiceCol = 'service_id';
 $bookingCustomerCol = 'customer_id';
@@ -65,7 +62,6 @@ if ($bookingCols && $bookingCols->num_rows > 0) {
     }
 }
 
-// Detect service columns
 $serviceNameCol = 'service_name';
 $servicePriceCol = 'price';
 $serviceCols = $conn->query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = '$dbName' AND TABLE_NAME = 'services'");
@@ -82,7 +78,6 @@ if ($serviceCols && $serviceCols->num_rows > 0) {
     }
 }
 
-// Detect customer name column
 $customerNameCol = 'name';
 $customerCols = $conn->query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = '$dbName' AND TABLE_NAME = 'customers'");
 if ($customerCols && $customerCols->num_rows > 0) {
@@ -100,7 +95,6 @@ if ($customerCols && $customerCols->num_rows > 0) {
     }
 }
 
-// Handle form submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'update_booking') {
     $bookingId = intval($_POST['booking_id']);
     $serviceId = intval($_POST['service_id']);
@@ -112,7 +106,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $notes = $conn->real_escape_string($_POST['notes']);
     $employeeId = !empty($_POST['employee_id']) ? intval($_POST['employee_id']) : null;
     
-    // Get service price
     $priceQuery = "SELECT `$servicePriceCol` AS price FROM services WHERE service_id = ?";
     $priceStmt = $conn->prepare($priceQuery);
     $priceStmt->bind_param("i", $serviceId);
@@ -120,7 +113,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $priceResult = $priceStmt->get_result();
     $servicePrice = $priceResult->fetch_assoc()['price'] ?? 0;
     
-    // Update booking
     $updateQuery = "UPDATE bookings SET 
                     `$bookingServiceCol` = ?,
                     booking_date = ?,
@@ -157,7 +149,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     }
 }
 
-// Get booking ID from URL
 $bookingId = isset($_GET['id']) ? intval($_GET['id']) : 0;
 
 if ($bookingId <= 0) {
@@ -165,7 +156,6 @@ if ($bookingId <= 0) {
     exit;
 }
 
-// Fetch booking details
 $bookingQuery = "SELECT b.*, 
                  s.`$serviceNameCol` AS service_name,
                  s.`$servicePriceCol` AS service_price,
@@ -185,7 +175,6 @@ if (!$booking) {
     exit;
 }
 
-// Get vehicle info
 if (isset($booking[$bookingVehicleCol]) && $booking[$bookingVehicleCol]) {
     $vehicleQuery = "SELECT * FROM vehicles WHERE vehicle_id = ?";
     $vStmt = $conn->prepare($vehicleQuery);
@@ -195,7 +184,6 @@ if (isset($booking[$bookingVehicleCol]) && $booking[$bookingVehicleCol]) {
     $vehicle = $vResult->fetch_assoc();
 }
 
-// Fetch all services
 $servicesQuery = "SELECT service_id, `$serviceNameCol` AS service_name, `$servicePriceCol` AS price FROM services ORDER BY service_name";
 $servicesResult = $conn->query($servicesQuery);
 $services = [];
@@ -203,7 +191,6 @@ while ($row = $servicesResult->fetch_assoc()) {
     $services[] = $row;
 }
 
-// Fetch all employees
 $employeesQuery = "SELECT employee_id, name FROM employees WHERE is_active = 1 ORDER BY name";
 $employeesResult = $conn->query($employeesQuery);
 $employees = [];
@@ -218,21 +205,11 @@ while ($row = $employeesResult->fetch_assoc()) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SmartWash - Edit Booking</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: #f5f7fa;
-            color: #333;
-            display: flex;
-            min-height: 100vh;
-        }
-
-        .sidebar {
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f5f7fa; color: #333; display: flex; min-height: 100vh; }
+        
+        /* SIDEBAR STYLES */
+        .admin-sidebar {
             width: 260px;
             background: linear-gradient(180deg, #667eea 0%, #764ba2 100%);
             color: white;
@@ -242,16 +219,21 @@ while ($row = $employeesResult->fetch_assoc()) {
             overflow-y: auto;
             transition: transform 0.3s ease;
             z-index: 999;
+            left: 0;
+            top: 0;
         }
 
-        .logo {
+        .admin-sidebar .logo {
             font-size: 1.8rem;
             font-weight: bold;
             padding: 0 1.5rem;
             margin-bottom: 2rem;
+            letter-spacing: 0.5px;
         }
 
-        .menu-item {
+        .admin-sidebar nav { display: flex; flex-direction: column; }
+
+        .admin-sidebar .menu-item {
             padding: 1rem 1.5rem;
             display: flex;
             align-items: center;
@@ -261,230 +243,142 @@ while ($row = $employeesResult->fetch_assoc()) {
             border-left: 4px solid transparent;
             text-decoration: none;
             color: white;
+            font-size: 1rem;
+            position: relative;
         }
 
-        .menu-item:hover,
-        .menu-item.active {
+        .admin-sidebar .menu-item:hover {
+            background: rgba(255, 255, 255, 0.15);
+            border-left-color: rgba(255, 255, 255, 0.5);
+        }
+
+        .admin-sidebar .menu-item.active {
             background: rgba(255, 255, 255, 0.2);
             border-left-color: white;
-        }
-
-        .main-content {
-            margin-left: 260px;
-            flex: 1;
-            padding: 2rem;
-            width: calc(100% - 260px);
-        }
-
-        .header {
-            background: white;
-            padding: 1.5rem 2rem;
-            border-radius: 15px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 2rem;
-            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
-        }
-
-        .header h1 {
-            font-size: 1.8rem;
-            color: #333;
-        }
-
-        .admin-info {
-            display: flex;
-            align-items: center;
-            gap: 1rem;
-        }
-
-        .admin-avatar {
-            width: 45px;
-            height: 45px;
-            border-radius: 50%;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            font-size: 1.5rem;
-        }
-
-        .card {
-            background: white;
-            padding: 2rem;
-            border-radius: 15px;
-            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
-            margin-bottom: 2rem;
-        }
-
-        .card-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 1.5rem;
-            padding-bottom: 1rem;
-            border-bottom: 2px solid #f0f0f0;
-        }
-
-        .card-title {
-            font-size: 1.3rem;
             font-weight: 600;
-            color: #333;
         }
 
-        .form-row {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 1.5rem;
-            margin-bottom: 1.5rem;
+        .admin-sidebar .menu-item.active::after {
+            content: '';
+            position: absolute;
+            right: 1rem;
+            width: 8px;
+            height: 8px;
+            background: white;
+            border-radius: 50%;
         }
 
-        .form-group {
-            margin-bottom: 1.5rem;
-        }
+        .admin-sidebar .menu-label { flex: 1; }
 
-        .form-group label {
-            display: block;
-            margin-bottom: 0.5rem;
-            color: #333;
-            font-weight: 500;
-        }
-
-        .form-group input,
-        .form-group select,
-        .form-group textarea {
-            width: 100%;
-            padding: 0.8rem;
-            border: 2px solid #e0e0e0;
-            border-radius: 10px;
-            font-size: 1rem;
-            transition: border-color 0.3s ease;
-        }
-
-        .form-group input:focus,
-        .form-group select:focus,
-        .form-group textarea:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-
-        .form-group textarea {
-            resize: vertical;
-            min-height: 100px;
-        }
-
-        .btn-primary {
-            padding: 0.8rem 2rem;
+        .mobile-menu-toggle {
+            display: none;
+            position: fixed;
+            top: 1rem;
+            left: 1rem;
+            width: 50px;
+            height: 50px;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
             border: none;
-            border-radius: 25px;
+            border-radius: 12px;
             cursor: pointer;
-            font-weight: 500;
+            z-index: 1001;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+            font-size: 1.5rem;
             transition: all 0.3s ease;
-            font-size: 1rem;
         }
 
-        .btn-primary:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        .mobile-menu-toggle:hover { transform: scale(1.05); }
+
+        .sidebar-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 998;
+            opacity: 0;
+            transition: opacity 0.3s ease;
         }
 
-        .btn-secondary {
-            padding: 0.8rem 2rem;
-            background: white;
-            color: #667eea;
-            border: 2px solid #667eea;
-            border-radius: 25px;
-            cursor: pointer;
-            font-weight: 500;
-            transition: all 0.3s ease;
-            font-size: 1rem;
-            text-decoration: none;
-            display: inline-block;
+        .sidebar-overlay.active {
+            display: block;
+            opacity: 1;
         }
 
-        .btn-secondary:hover {
-            background: #667eea;
-            color: white;
-        }
+        .admin-sidebar::-webkit-scrollbar { width: 6px; }
+        .admin-sidebar::-webkit-scrollbar-track { background: rgba(255, 255, 255, 0.1); }
+        .admin-sidebar::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.3); border-radius: 3px; }
+        .admin-sidebar::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.5); }
 
-        .button-group {
-            display: flex;
-            gap: 1rem;
-            margin-top: 2rem;
-        }
-
-        .info-box {
-            background: #f8f9fa;
-            padding: 1.5rem;
-            border-radius: 10px;
-            margin-bottom: 1.5rem;
-            border-left: 4px solid #667eea;
-        }
-
-        .info-box h3 {
-            margin-bottom: 0.5rem;
-            color: #333;
-        }
-
-        .info-box p {
-            color: #666;
-            margin-bottom: 0.3rem;
-        }
-
-        .error-message {
-            background: #f8d7da;
-            color: #721c24;
-            padding: 1rem 1.5rem;
-            border-radius: 10px;
-            margin-bottom: 1.5rem;
-            border: 1px solid #f5c6cb;
-        }
-
-        .paid-warning {
-            background: #fff3cd;
-            color: #856404;
-            padding: 1rem 1.5rem;
-            border-radius: 10px;
-            margin-bottom: 1.5rem;
-            border: 1px solid #ffeeba;
-        }
+        .main-content { margin-left: 260px; flex: 1; padding: 2rem; width: calc(100% - 260px); transition: margin-left 0.3s ease; }
+        .header { background: white; padding: 1.5rem 2rem; border-radius: 15px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1); }
+        .header h1 { font-size: 1.8rem; color: #333; }
+        .admin-info { display: flex; align-items: center; gap: 1rem; }
+        .admin-avatar { width: 45px; height: 45px; border-radius: 50%; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); display: flex; align-items: center; justify-content: center; color: white; font-size: 1.5rem; }
+        .card { background: white; padding: 2rem; border-radius: 15px; box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1); margin-bottom: 2rem; }
+        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 2px solid #f0f0f0; }
+        .card-title { font-size: 1.3rem; font-weight: 600; color: #333; }
+        .form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.5rem; margin-bottom: 1.5rem; }
+        .form-group { margin-bottom: 1.5rem; }
+        .form-group label { display: block; margin-bottom: 0.5rem; color: #333; font-weight: 500; }
+        .form-group input, .form-group select, .form-group textarea { width: 100%; padding: 0.8rem; border: 2px solid #e0e0e0; border-radius: 10px; font-size: 1rem; transition: border-color 0.3s ease; }
+        .form-group input:focus, .form-group select:focus, .form-group textarea:focus { outline: none; border-color: #667eea; }
+        .form-group textarea { resize: vertical; min-height: 100px; }
+        .btn-primary { padding: 0.8rem 2rem; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 25px; cursor: pointer; font-weight: 500; transition: all 0.3s ease; font-size: 1rem; }
+        .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4); }
+        .btn-secondary { padding: 0.8rem 2rem; background: white; color: #667eea; border: 2px solid #667eea; border-radius: 25px; cursor: pointer; font-weight: 500; transition: all 0.3s ease; font-size: 1rem; text-decoration: none; display: inline-block; }
+        .btn-secondary:hover { background: #667eea; color: white; }
+        .button-group { display: flex; gap: 1rem; margin-top: 2rem; }
+        .info-box { background: #f8f9fa; padding: 1.5rem; border-radius: 10px; margin-bottom: 1.5rem; border-left: 4px solid #667eea; }
+        .info-box h3 { margin-bottom: 0.5rem; color: #333; }
+        .info-box p { color: #666; margin-bottom: 0.3rem; }
+        .error-message { background: #f8d7da; color: #721c24; padding: 1rem 1.5rem; border-radius: 10px; margin-bottom: 1.5rem; border: 1px solid #f5c6cb; }
+        .paid-warning { background: #fff3cd; color: #856404; padding: 1rem 1.5rem; border-radius: 10px; margin-bottom: 1.5rem; border: 1px solid #ffeeba; }
 
         @media (max-width: 768px) {
-            .sidebar {
-                transform: translateX(-100%);
-            }
-
-            .sidebar.active {
-                transform: translateX(0);
-            }
-
-            .main-content {
-                margin-left: 0;
-                width: 100%;
-            }
-
-            .form-row {
-                grid-template-columns: 1fr;
-            }
+            .admin-sidebar { transform: translateX(-100%); }
+            .admin-sidebar.active { transform: translateX(0); }
+            .mobile-menu-toggle { display: flex; align-items: center; justify-content: center; }
+            .main-content { margin-left: 0; width: 100%; }
+            .form-row { grid-template-columns: 1fr; }
         }
     </style>
 </head>
 <body>
-    <aside class="sidebar" id="sidebar">
+    <!-- SIDEBAR -->
+    <aside class="admin-sidebar" id="adminSidebar">
         <div class="logo">SmartWash Admin</div>
+        
         <nav>
-            <a href="index.php" class="menu-item">Dashboard</a>
-            <a href="bookings.php" class="menu-item active">Bookings</a>
-            <a href="customers.php" class="menu-item">Customers</a>
-            <a href="services.php" class="menu-item">Services</a>
-            <a href="staff.php" class="menu-item">Staff</a>
-            <a href="reports.php" class="menu-item">Reports</a>
-            <a href="settings.php" class="menu-item">Settings</a>
+            <a href="index.php" class="menu-item <?php echo ($current_page === 'index') ? 'active' : ''; ?>">
+                <span class="menu-label">Dashboard</span>
+            </a>
+            <a href="bookings.php" class="menu-item <?php echo ($current_page === 'bookings') ? 'active' : ''; ?>">
+                <span class="menu-label">Bookings</span>
+            </a>
+            <a href="customers.php" class="menu-item <?php echo ($current_page === 'customers') ? 'active' : ''; ?>">
+                <span class="menu-label">Customers</span>
+            </a>
+            <a href="services.php" class="menu-item <?php echo ($current_page === 'services') ? 'active' : ''; ?>">
+                <span class="menu-label">Services</span>
+            </a>
+            <a href="staff.php" class="menu-item <?php echo ($current_page === 'staff') ? 'active' : ''; ?>">
+                <span class="menu-label">Staff</span>
+            </a>
+            <a href="reports.php" class="menu-item <?php echo ($current_page === 'reports') ? 'active' : ''; ?>">
+                <span class="menu-label">Reports</span>
+            </a>
+            <a href="settings.php" class="menu-item <?php echo ($current_page === 'settings') ? 'active' : ''; ?>">
+                <span class="menu-label">Settings</span>
+            </a>
         </nav>
     </aside>
+
+    <button class="mobile-menu-toggle" id="mobileMenuToggle" onclick="toggleSidebar()">☰</button>
+    <div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
 
     <main class="main-content">
         <div class="header">
@@ -493,11 +387,11 @@ while ($row = $employeesResult->fetch_assoc()) {
                 <p style="color: #666; margin-top: 0.3rem;">Modify booking details</p>
             </div>
             <div class="admin-info">
-                <div>
-                    <p style="font-weight: 600;"><?php echo htmlspecialchars($adminName); ?></p>
-                    <p style="font-size: 0.85rem; color: #666;"><?php echo htmlspecialchars($adminEmail); ?></p>
+                <div style="text-align: right;">
+                    <strong><?php echo htmlspecialchars($adminName); ?></strong>
+                    <div style="font-size: 0.85rem; color: #666;">Administrator</div>
                 </div>
-                <div class="admin-avatar">👤</div>
+                <div class="admin-avatar"><?php echo strtoupper(substr($adminName, 0, 1)); ?></div>
             </div>
         </div>
 
@@ -610,6 +504,48 @@ while ($row = $employeesResult->fetch_assoc()) {
             </form>
         </div>
     </main>
+
+    <script>
+        function toggleSidebar() {
+            const sidebar = document.getElementById('adminSidebar');
+            const overlay = document.getElementById('sidebarOverlay');
+            const toggle = document.getElementById('mobileMenuToggle');
+            
+            sidebar.classList.toggle('active');
+            overlay.classList.toggle('active');
+            toggle.innerHTML = sidebar.classList.contains('active') ? '✕' : '☰';
+        }
+
+        function closeSidebar() {
+            const sidebar = document.getElementById('adminSidebar');
+            const overlay = document.getElementById('sidebarOverlay');
+            const toggle = document.getElementById('mobileMenuToggle');
+            
+            sidebar.classList.remove('active');
+            overlay.classList.remove('active');
+            toggle.innerHTML = '☰';
+        }
+
+        document.querySelectorAll('.menu-item').forEach(item => {
+            item.addEventListener('click', function() {
+                if (window.innerWidth <= 768) {
+                    closeSidebar();
+                }
+            });
+        });
+
+        window.addEventListener('resize', function() {
+            if (window.innerWidth > 768) {
+                closeSidebar();
+            }
+        });
+
+        document.addEventListener('keydown', function(event) {
+            if (event.key === 'Escape') {
+                closeSidebar();
+            }
+        });
+    </script>
 </body>
 </html>
 <?php

@@ -23,15 +23,7 @@ if (file_exists($dbPath)) {
         die("Database connection failed. Please check your database.php file.");
     }
 } else {
-    // Fallback: Create a basic database connection if file doesn't exist
-    $servername = "localhost";
-    $username = "root";
-    $password = "";
-    $database = "smartwash";
-    $conn = new mysqli($servername, $username, $password, $database);
-    if ($conn->connect_error) {
-        die("Connection failed: " . $conn->connect_error);
-    }
+    die("Database configuration file not found.");
 }
 
 // Handle customer actions (add, edit, delete)
@@ -49,21 +41,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $password = password_hash($_POST['password'], PASSWORD_DEFAULT);
         
         // Check if email already exists
-        $checkEmail = "SELECT id FROM customers WHERE email = '$email'";
+        $checkEmail = "SELECT customer_id FROM customers WHERE name = '$name' OR customer_id IN (SELECT customer_id FROM customers c JOIN users u ON c.user_id = u.user_id WHERE u.email = '$email')";
         $result = $conn->query($checkEmail);
         
         if ($result && $result->num_rows > 0) {
             $message = 'Email already exists!';
             $messageType = 'error';
         } else {
-            $sql = "INSERT INTO customers (name, email, phone, address, password, created_at) 
-                    VALUES ('$name', '$email', '$phone', '$address', '$password', NOW())";
+            // Create user first
+            $userSql = "INSERT INTO users (email, password_hash, first_name, last_name, phone, user_type, status) 
+                        VALUES ('$email', '$password', '$name', '', '$phone', 'customer', 'active')";
             
-            if ($conn->query($sql)) {
-                $message = 'Customer added successfully!';
-                $messageType = 'success';
+            if ($conn->query($userSql)) {
+                $userId = $conn->insert_id;
+                
+                // Create customer
+                $sql = "INSERT INTO customers (user_id, name, loyalty_points, membership_tier, total_spent, total_visits) 
+                        VALUES ($userId, '$name', 0, 'Bronze', 0, 0)";
+                
+                if ($conn->query($sql)) {
+                    $message = 'Customer added successfully!';
+                    $messageType = 'success';
+                } else {
+                    $message = 'Error adding customer: ' . $conn->error;
+                    $messageType = 'error';
+                }
             } else {
-                $message = 'Error adding customer: ' . $conn->error;
+                $message = 'Error creating user: ' . $conn->error;
                 $messageType = 'error';
             }
         }
@@ -76,28 +80,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $phone = $conn->real_escape_string($_POST['phone']);
         $address = $conn->real_escape_string($_POST['address']);
         
-        // Check if email already exists for another customer
-        $checkEmail = "SELECT id FROM customers WHERE email = '$email' AND id != '$customer_id'";
-        $result = $conn->query($checkEmail);
+        $sql = "UPDATE customers SET name = '$name' WHERE customer_id = '$customer_id'";
         
-        if ($result && $result->num_rows > 0) {
-            $message = 'Email already exists for another customer!';
-            $messageType = 'error';
-        } else {
-            $sql = "UPDATE customers SET 
-                    name = '$name', 
-                    email = '$email', 
-                    phone = '$phone', 
-                    address = '$address'
-                    WHERE id = '$customer_id'";
+        if ($conn->query($sql)) {
+            // Update user info
+            $updateUser = "UPDATE users u 
+                          INNER JOIN customers c ON u.user_id = c.user_id 
+                          SET u.email = '$email', u.phone = '$phone' 
+                          WHERE c.customer_id = '$customer_id'";
+            $conn->query($updateUser);
             
-            if ($conn->query($sql)) {
-                $message = 'Customer updated successfully!';
-                $messageType = 'success';
-            } else {
-                $message = 'Error updating customer: ' . $conn->error;
-                $messageType = 'error';
-            }
+            $message = 'Customer updated successfully!';
+            $messageType = 'success';
+        } else {
+            $message = 'Error updating customer: ' . $conn->error;
+            $messageType = 'error';
         }
     }
     
@@ -115,7 +112,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $message = 'Cannot delete customer with existing bookings!';
                 $messageType = 'error';
             } else {
-                $sql = "DELETE FROM customers WHERE id = '$customer_id'";
+                $sql = "DELETE FROM customers WHERE customer_id = '$customer_id'";
                 
                 if ($conn->query($sql)) {
                     $message = 'Customer deleted successfully!';
@@ -125,120 +122,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $messageType = 'error';
                 }
             }
-        } else {
-            $message = 'Error checking bookings: ' . $conn->error;
-            $messageType = 'error';
         }
     }
 }
+
+// Get database name
+$dbNameResult = $conn->query("SELECT DATABASE() AS dbname");
+$dbName = $dbNameResult ? $dbNameResult->fetch_assoc()['dbname'] : 'smartwash_db';
 
 // Fetch all customers with booking statistics
-// Detect customers table PK
-$customersPK = 'id';
-$customersCols = [];
-$result = $conn->query("SELECT COLUMN_NAME, COLUMN_KEY FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'customers'");
-if ($result) {
-    while ($row = $result->fetch_assoc()) {
-        $customersCols[$row['COLUMN_NAME']] = $row['COLUMN_KEY'];
-    }
-    foreach ($customersCols as $col => $key) {
-        if ($key === 'PRI') {
-            $customersPK = $col;
-            break;
-        }
-    }
-    // Fallback: if no PK, use first column
-    if (empty($customersPK) && count($customersCols) > 0) {
-        $customersPK = array_keys($customersCols)[0];
-    }
-}
-
-// Detect bookings table PK and customer reference column
-$bookingsPK = 'id';
-$bookingsCustomerCol = 'customer_id';
-$bookingsServiceCol = 'service_id';
-$bookingsStatusCol = 'status';
-$bookingsDateCol = 'booking_date';
-// Get columns from INFORMATION_SCHEMA
-$bookingsCols = [];
-$result = $conn->query("SELECT COLUMN_NAME, COLUMN_KEY FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings'");
-if ($result) {
-    while ($row = $result->fetch_assoc()) {
-        $bookingsCols[$row['COLUMN_NAME']] = $row['COLUMN_KEY'];
-    }
-    // Find PK
-    foreach ($bookingsCols as $col => $key) {
-        if ($key === 'PRI') {
-            $bookingsPK = $col;
-            break;
-        }
-    }
-    // Find customer reference
-    foreach ($bookingsCols as $col => $key) {
-        if (stripos($col, 'customer') !== false) {
-            $bookingsCustomerCol = $col;
-            break;
-        }
-    }
-    // Find service reference
-    foreach ($bookingsCols as $col => $key) {
-        if (stripos($col, 'service') !== false) {
-            $bookingsServiceCol = $col;
-            break;
-        }
-    }
-    // Find status column
-    foreach ($bookingsCols as $col => $key) {
-        if (stripos($col, 'status') !== false) {
-            $bookingsStatusCol = $col;
-            break;
-        }
-    }
-    // Find booking date column
-    foreach ($bookingsCols as $col => $key) {
-        if (stripos($col, 'date') !== false) {
-            $bookingsDateCol = $col;
-            break;
-        }
-    }
-}
-
-// Detect services PK and price column
-$servicesPK = 'id';
-$servicesPriceCol = 'price';
-$servicesCols = [];
-$result = $conn->query("SELECT COLUMN_NAME, COLUMN_KEY FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'services'");
-if ($result) {
-    while ($row = $result->fetch_assoc()) {
-        $servicesCols[$row['COLUMN_NAME']] = $row['COLUMN_KEY'];
-    }
-    foreach ($servicesCols as $col => $key) {
-        if ($key === 'PRI') {
-            $servicesPK = $col;
-            break;
-        }
-    }
-    foreach ($servicesCols as $col => $key) {
-        if (stripos($col, 'price') !== false) {
-            $servicesPriceCol = $col;
-            break;
-        }
-    }
-}
-
-$customersQuery = "SELECT c.*, 
-                   COALESCE(COUNT(DISTINCT b.`$bookingsPK`), 0) as total_bookings,
-                   COALESCE(SUM(CASE WHEN b.`$bookingsStatusCol` = 'completed' THEN 1 ELSE 0 END), 0) as completed_bookings,
-                   COALESCE(SUM(CASE WHEN b.`$bookingsStatusCol` = 'completed' THEN s.`$servicesPriceCol` ELSE 0 END), 0) as total_spent
+$customersQuery = "SELECT c.customer_id, c.name, c.loyalty_points, c.membership_tier, c.total_spent, c.total_visits,
+                   u.email, u.phone,
+                   COALESCE(COUNT(DISTINCT b.booking_id), 0) as total_bookings,
+                   COALESCE(SUM(CASE WHEN b.status = 'Completed' THEN 1 ELSE 0 END), 0) as completed_bookings
                    FROM customers c
-                   LEFT JOIN bookings b ON c.`$customersPK` = b.`$bookingsCustomerCol`
-                   LEFT JOIN services s ON b.`$bookingsServiceCol` = s.`$servicesPK`
-                   GROUP BY c.`$customersPK`
-                   ORDER BY c.created_at DESC";
+                   LEFT JOIN users u ON c.user_id = u.user_id
+                   LEFT JOIN bookings b ON c.customer_id = b.customer_id
+                   GROUP BY c.customer_id
+                   ORDER BY c.customer_id DESC";
 $customersResult = $conn->query($customersQuery);
-if ($conn->error) {
-    echo '<div class="message error">Database query error: ' . htmlspecialchars($conn->error) . '</div>';
-}
 
 // Initialize default values if query fails
 $stats = ['total' => 0, 'new_this_week' => 0, 'new_this_month' => 0];
@@ -247,8 +149,8 @@ $activeStats = ['active' => 0];
 // Get customer statistics
 $statsQuery = "SELECT 
                 COUNT(*) as total,
-                COUNT(CASE WHEN created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY) THEN 1 END) as new_this_week,
-                COUNT(CASE WHEN created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY) THEN 1 END) as new_this_month
+                0 as new_this_week,
+                0 as new_this_month
                 FROM customers";
 $statsResult = $conn->query($statsQuery);
 if ($statsResult) {
@@ -293,8 +195,6 @@ if ($activeResult) {
             position: fixed;
             height: 100vh;
             overflow-y: auto;
-            transition: transform 0.3s ease;
-            z-index: 999;
         }
 
         .logo {
@@ -306,24 +206,18 @@ if ($activeResult) {
 
         .menu-item {
             padding: 1rem 1.5rem;
-            display: flex;
-            align-items: center;
-            gap: 1rem;
             cursor: pointer;
             transition: all 0.3s ease;
             border-left: 4px solid transparent;
             text-decoration: none;
             color: white;
+            display: block;
         }
 
         .menu-item:hover,
         .menu-item.active {
             background: rgba(255, 255, 255, 0.2);
             border-left-color: white;
-        }
-
-        .menu-icon {
-            font-size: 1.5rem;
         }
 
         .main-content {
@@ -337,9 +231,6 @@ if ($activeResult) {
             background: white;
             padding: 1.5rem 2rem;
             border-radius: 15px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
             margin-bottom: 2rem;
             box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
         }
@@ -361,9 +252,7 @@ if ($activeResult) {
             padding: 1.5rem;
             border-radius: 15px;
             box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
-            transition: all 0.3s ease;
             position: relative;
-            overflow: hidden;
         }
 
         .stat-card::before {
@@ -376,11 +265,6 @@ if ($activeResult) {
             background: linear-gradient(180deg, #667eea 0%, #764ba2 100%);
         }
 
-        .stat-card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
-        }
-
         .stat-icon {
             font-size: 2rem;
             margin-bottom: 0.5rem;
@@ -390,7 +274,6 @@ if ($activeResult) {
             font-size: 2rem;
             font-weight: bold;
             color: #667eea;
-            margin-bottom: 0.3rem;
         }
 
         .stat-label {
@@ -403,7 +286,6 @@ if ($activeResult) {
             padding: 2rem;
             border-radius: 15px;
             box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
-            margin-bottom: 2rem;
         }
 
         .card-header {
@@ -415,12 +297,6 @@ if ($activeResult) {
             border-bottom: 2px solid #f0f0f0;
         }
 
-        .card-title {
-            font-size: 1.3rem;
-            font-weight: 600;
-            color: #333;
-        }
-
         .btn-primary {
             padding: 0.8rem 1.5rem;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -429,71 +305,6 @@ if ($activeResult) {
             border-radius: 25px;
             cursor: pointer;
             font-weight: 500;
-            transition: all 0.3s ease;
-            font-size: 1rem;
-        }
-
-        .btn-primary:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
-        }
-
-        .btn-secondary {
-            padding: 0.5rem 1rem;
-            background: white;
-            color: #667eea;
-            border: 2px solid #667eea;
-            border-radius: 20px;
-            cursor: pointer;
-            font-weight: 500;
-            transition: all 0.3s ease;
-            font-size: 0.85rem;
-        }
-
-        .btn-secondary:hover {
-            background: #667eea;
-            color: white;
-        }
-
-        .btn-danger {
-            padding: 0.5rem 1rem;
-            background: white;
-            color: #e74c3c;
-            border: 2px solid #e74c3c;
-            border-radius: 20px;
-            cursor: pointer;
-            font-weight: 500;
-            transition: all 0.3s ease;
-            font-size: 0.85rem;
-        }
-
-        .btn-danger:hover {
-            background: #e74c3c;
-            color: white;
-        }
-
-        .search-bar {
-            display: flex;
-            gap: 1rem;
-            margin-bottom: 2rem;
-        }
-
-        .search-input {
-            flex: 1;
-            padding: 0.8rem 1.5rem;
-            border: 2px solid #e0e0e0;
-            border-radius: 25px;
-            font-size: 1rem;
-            transition: border-color 0.3s ease;
-        }
-
-        .search-input:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-
-        .table-container {
-            overflow-x: auto;
         }
 
         table {
@@ -501,54 +312,63 @@ if ($activeResult) {
             border-collapse: collapse;
         }
 
-        thead {
-            background: #f8f9fa;
+        th, td {
+            padding: 1rem;
+            text-align: left;
+            border-bottom: 1px solid #f0f0f0;
         }
 
         th {
-            padding: 1rem;
-            text-align: left;
+            background: #f8f9fa;
             font-weight: 600;
             color: #666;
-            font-size: 0.9rem;
-        }
-
-        td {
-            padding: 1rem;
-            border-bottom: 1px solid #f0f0f0;
         }
 
         tr:hover {
             background: #f8f9fa;
         }
 
-        .customer-avatar {
-            width: 45px;
-            height: 45px;
-            border-radius: 50%;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
+        .message {
+            padding: 1rem 1.5rem;
+            border-radius: 10px;
+            margin-bottom: 1.5rem;
+        }
+
+        .message.success {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .message.error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .btn-secondary {
+            padding: 0.5rem 1rem;
+            background: #667eea;
             color: white;
-            font-weight: bold;
-            font-size: 1.2rem;
+            border: none;
+            border-radius: 15px;
+            cursor: pointer;
+            margin-right: 0.5rem;
         }
 
-        .customer-info {
-            display: flex;
-            align-items: center;
-            gap: 1rem;
+        .btn-danger {
+            padding: 0.5rem 1rem;
+            background: #e74c3c;
+            color: white;
+            border: none;
+            border-radius: 15px;
+            cursor: pointer;
         }
 
-        .customer-details h4 {
-            margin-bottom: 0.2rem;
-            color: #333;
-        }
-
-        .customer-details p {
-            font-size: 0.85rem;
-            color: #666;
+        .search-input {
+            width: 100%;
+            padding: 0.8rem 1.5rem;
+            border: 2px solid #e0e0e0;
+            border-radius: 25px;
+            margin-bottom: 1.5rem;
         }
 
         .modal {
@@ -578,39 +398,6 @@ if ($activeResult) {
             overflow-y: auto;
         }
 
-        .modal-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 1.5rem;
-            padding-bottom: 1rem;
-            border-bottom: 2px solid #f0f0f0;
-        }
-
-        .modal-title {
-            font-size: 1.5rem;
-            font-weight: 600;
-            color: #333;
-        }
-
-        .close-btn {
-            font-size: 2rem;
-            color: #999;
-            cursor: pointer;
-            background: none;
-            border: none;
-            padding: 0;
-            width: 30px;
-            height: 30px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .close-btn:hover {
-            color: #333;
-        }
-
         .form-group {
             margin-bottom: 1.5rem;
         }
@@ -618,142 +405,77 @@ if ($activeResult) {
         .form-group label {
             display: block;
             margin-bottom: 0.5rem;
-            color: #333;
             font-weight: 500;
         }
 
         .form-group input,
-        .form-group select,
         .form-group textarea {
             width: 100%;
             padding: 0.8rem;
             border: 2px solid #e0e0e0;
             border-radius: 10px;
-            font-size: 1rem;
-            transition: border-color 0.3s ease;
         }
 
-        .form-group textarea {
-            resize: vertical;
-            min-height: 100px;
+        .close-btn {
+            float: right;
+            font-size: 1.5rem;
+            cursor: pointer;
+            color: #666;
         }
 
-        .form-group input:focus,
-        .form-group select:focus,
-        .form-group textarea:focus {
-            outline: none;
-            border-color: #667eea;
-        }
+        .table-container { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 
-        .form-actions {
-            display: flex;
-            gap: 1rem;
-            justify-content: flex-end;
-            margin-top: 2rem;
-        }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1.5rem; margin-bottom: 2rem; }
 
-        .message {
-            padding: 1rem 1.5rem;
-            border-radius: 10px;
-            margin-bottom: 1.5rem;
-            animation: slideIn 0.3s ease;
-        }
-
-        .message.success {
-            background: #d4edda;
-            color: #155724;
-            border: 1px solid #c3e6cb;
-        }
-
-        .message.error {
-            background: #f8d7da;
-            color: #721c24;
-            border: 1px solid #f5c6cb;
-        }
-
-        @keyframes slideIn {
-            from {
-                transform: translateY(-20px);
-                opacity: 0;
-            }
-            to {
-                transform: translateY(0);
-                opacity: 1;
-            }
-        }
-
-        .action-buttons {
-            display: flex;
-            gap: 0.5rem;
+        @media (max-width: 1024px) {
+            .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 1rem; }
+            table { font-size: 0.9rem; }
+            th, td { padding: 0.75rem; }
         }
 
         @media (max-width: 768px) {
-            .sidebar {
-                transform: translateX(-100%);
-            }
+            .sidebar { transform: translateX(-100%); position: fixed; z-index: 1000; width: 260px; }
+            .main-content { margin-left: 0; width: 100%; padding: 1rem; }
+            .header { margin-bottom: 1.5rem; }
+            .header h1 { font-size: 1.5rem; }
+            .card-header { flex-direction: column; align-items: flex-start; gap: 1rem; }
+            .stats-grid { grid-template-columns: 1fr; gap: 1rem; }
+            .stat-value { font-size: 1.5rem; }
+            .card { padding: 1rem; }
+            table { font-size: 0.8rem; }
+            th, td { padding: 0.5rem; }
+            .btn-secondary, .btn-danger { padding: 0.3rem 0.6rem; font-size: 0.7rem; }
+        }
 
-            .sidebar.active {
-                transform: translateX(0);
-            }
-
-            .main-content {
-                margin-left: 0;
-                width: 100%;
-            }
-
-            .stats-grid {
-                grid-template-columns: 1fr;
-            }
-
-            .search-bar {
-                flex-direction: column;
-            }
-
-            .table-container {
-                overflow-x: scroll;
-            }
-
-            .customer-info {
-                flex-direction: column;
-                align-items: flex-start;
-            }
+        @media (max-width: 480px) {
+            .main-content { padding: 0.5rem; }
+            .header h1 { font-size: 1.2rem; }
+            .card { padding: 0.75rem; }
+            table { font-size: 0.7rem; }
+            th, td { padding: 0.4rem; }
+            .stat-value { font-size: 1.2rem; }
+            .modal-content { width: 95%; padding: 1rem; }
         }
     </style>
 </head>
 <body>
-    <aside class="sidebar" id="sidebar">
+    <aside class="sidebar">
         <div class="logo">SmartWash Admin</div>
         <nav>
-            <div class="menu-item active" onclick="window.location.href='index.php'">
-                <span>Dashboard</span>
-            </div>
-            <div class="menu-item" onclick="window.location.href='bookings.php'">
-                <span>Bookings</span>
-            </div>
-            <div class="menu-item" onclick="window.location.href='customers.php'">
-                <span>Customers</span>
-            </div>
-            <div class="menu-item" onclick="window.location.href='services.php'">
-                <span>Services</span>
-            </div>
-            <div class="menu-item" onclick="window.location.href='staff.php'">
-                <span>Staff</span>
-            </div>
-            <div class="menu-item" onclick="window.location.href='reports.php'">
-                <span>Reports</span>
-            </div>
-            <div class="menu-item" onclick="window.location.href='settings.php'">
-                <span>Settings</span>
-            </div>
+            <a href="index.php" class="menu-item">Dashboard</a>
+            <a href="bookings.php" class="menu-item">Bookings</a>
+            <a href="customers.php" class="menu-item active">Customers</a>
+            <a href="services.php" class="menu-item">Services</a>
+            <a href="staff.php" class="menu-item">Staff</a>
+            <a href="reports.php" class="menu-item">Reports</a>
+            <a href="settings.php" class="menu-item">Settings</a>
         </nav>
     </aside>
 
     <main class="main-content">
         <div class="header">
-            <div>
-                <h1>Customers Management</h1>
-                <p style="color: #666; margin-top: 0.3rem;">Manage all customer accounts and information</p>
-            </div>
+            <h1>Customers Management</h1>
+            <p style="color: #666; margin-top: 0.3rem;">Manage all customer accounts</p>
         </div>
 
         <?php if (!empty($message)): ?>
@@ -785,159 +507,106 @@ if ($activeResult) {
             </div>
         </div>
 
-        <div class="search-bar">
-            <input type="text" class="search-input" id="searchInput" placeholder="Search by name, email, or phone..." onkeyup="filterTable()">
-            <button class="btn-primary" onclick="openAddModal()">+ New Customer</button>
-        </div>
+        <input type="text" class="search-input" id="searchInput" placeholder="Search customers..." onkeyup="filterTable()">
 
         <div class="card">
             <div class="card-header">
-                <h2 class="card-title">All Customers</h2>
+                <h2>All Customers</h2>
+                <button class="btn-primary" onclick="openAddModal()">+ New Customer</button>
             </div>
-            <div class="table-container">
-                <table id="customersTable">
-                    <thead>
+            <table id="customersTable">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Email</th>
+                        <th>Phone</th>
+                        <th>Bookings</th>
+                        <th>Total Spent</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php if ($customersResult && $customersResult->num_rows > 0): ?>
+                        <?php while ($customer = $customersResult->fetch_assoc()): ?>
                         <tr>
-                            <th>Customer</th>
-                            <th>Contact</th>
-                            <th>Address</th>
-                            <th>Total Bookings</th>
-                            <th>Completed</th>
-                            <th>Total Spent</th>
-                            <th>Joined</th>
-                            <th>Actions</th>
+                            <td><strong><?php echo htmlspecialchars($customer['name']); ?></strong></td>
+                            <td><?php echo htmlspecialchars($customer['email'] ?? 'N/A'); ?></td>
+                            <td><?php echo htmlspecialchars($customer['phone'] ?? 'N/A'); ?></td>
+                            <td><?php echo $customer['total_bookings']; ?></td>
+                            <td><strong>₱<?php echo number_format($customer['total_spent'], 2); ?></strong></td>
+                            <td>
+                                <button class="btn-secondary" onclick='editCustomer(<?php echo json_encode($customer); ?>)'>Edit</button>
+                                <button class="btn-danger" onclick="deleteCustomer(<?php echo $customer['customer_id']; ?>)">Delete</button>
+                            </td>
                         </tr>
-                    </thead>
-                    <tbody>
-                        <?php if ($customersResult && $customersResult->num_rows > 0): ?>
-                            <?php while ($customer = $customersResult->fetch_assoc()): ?>
-                            <tr>
-                                <td>
-                                    <div class="customer-info">
-                                        <div class="customer-avatar">
-                                            <?php echo strtoupper(substr($customer['name'], 0, 1)); ?>
-                                        </div>
-                                        <div class="customer-details">
-                                            <h4><?php echo htmlspecialchars($customer['name']); ?></h4>
-                                            <p><?php echo htmlspecialchars($customer['email']); ?></p>
-                                        </div>
-                                    </div>
-                                </td>
-                                <td>
-                                    <?php echo htmlspecialchars($customer['phone'] ?? 'N/A'); ?>
-                                </td>
-                                <td><?php echo htmlspecialchars($customer['address'] ?? 'N/A'); ?></td>
-                                <td>
-                                    <strong><?php echo $customer['total_bookings']; ?></strong>
-                                </td>
-                                <td>
-                                    <strong style="color: #27ae60;"><?php echo $customer['completed_bookings']; ?></strong>
-                                </td>
-                                <td>
-                                    <strong style="color: #667eea;">₱<?php echo number_format($customer['total_spent'] ?? 0, 2); ?></strong>
-                                </td>
-                                <td>
-                                    <?php echo date('M d, Y', strtotime($customer['created_at'])); ?>
-                                </td>
-                                <td>
-                                    <div class="action-buttons">
-                                        <button class="btn-secondary" onclick='openEditModal(<?php echo json_encode($customer); ?>)'>Edit</button>
-                                        <button class="btn-danger" onclick="deleteCustomer(<?php echo $customer['id']; ?>)">Delete</button>
-                                    </div>
-                                </td>
-                            </tr>
-                            <?php endwhile; ?>
-                        <?php else: ?>
-                            <tr>
-                                <td colspan="8" style="text-align: center; padding: 2rem; color: #999;">
-                                    No customers found. Click "New Customer" to add one.
-                                </td>
-                            </tr>
-                        <?php endif; ?>
-                    </tbody>
-                </table>
-            </div>
+                        <?php endwhile; ?>
+                    <?php else: ?>
+                        <tr>
+                            <td colspan="6" style="text-align: center; padding: 2rem;">No customers found</td>
+                        </tr>
+                    <?php endif; ?>
+                </tbody>
+            </table>
         </div>
     </main>
 
-    <!-- Add Customer Modal -->
+    <!-- Add Modal -->
     <div class="modal" id="addModal">
         <div class="modal-content">
-            <div class="modal-header">
-                <h2 class="modal-title">New Customer</h2>
-                <button class="close-btn" onclick="closeAddModal()">&times;</button>
-            </div>
-            <form method="POST" action="">
+            <span class="close-btn" onclick="closeModal('addModal')">&times;</span>
+            <h2>New Customer</h2>
+            <form method="POST">
                 <input type="hidden" name="action" value="add_customer">
-                
                 <div class="form-group">
-                    <label for="name">Full Name *</label>
-                    <input type="text" name="name" id="name" placeholder="Enter full name" required>
+                    <label>Full Name</label>
+                    <input type="text" name="name" required>
                 </div>
-
                 <div class="form-group">
-                    <label for="email">Email Address *</label>
-                    <input type="email" name="email" id="email" placeholder="customer@example.com" required>
+                    <label>Email</label>
+                    <input type="email" name="email" required>
                 </div>
-
                 <div class="form-group">
-                    <label for="phone">Phone Number *</label>
-                    <input type="tel" name="phone" id="phone" placeholder="+63 912 345 6789" required>
+                    <label>Phone</label>
+                    <input type="tel" name="phone" required>
                 </div>
-
                 <div class="form-group">
-                    <label for="address">Address</label>
-                    <textarea name="address" id="address" placeholder="Enter complete address"></textarea>
+                    <label>Address</label>
+                    <textarea name="address"></textarea>
                 </div>
-
                 <div class="form-group">
-                    <label for="password">Password *</label>
-                    <input type="password" name="password" id="password" placeholder="Create a password" required minlength="6">
+                    <label>Password</label>
+                    <input type="password" name="password" required minlength="6">
                 </div>
-
-                <div class="form-actions">
-                    <button type="button" class="btn-secondary" onclick="closeAddModal()">Cancel</button>
-                    <button type="submit" class="btn-primary">Add Customer</button>
-                </div>
+                <button type="submit" class="btn-primary">Add Customer</button>
             </form>
         </div>
     </div>
 
-    <!-- Edit Customer Modal -->
+    <!-- Edit Modal -->
     <div class="modal" id="editModal">
         <div class="modal-content">
-            <div class="modal-header">
-                <h2 class="modal-title">Edit Customer</h2>
-                <button class="close-btn" onclick="closeEditModal()">&times;</button>
-            </div>
-            <form method="POST" action="">
+            <span class="close-btn" onclick="closeModal('editModal')">&times;</span>
+            <h2>Edit Customer</h2>
+            <form method="POST">
                 <input type="hidden" name="action" value="edit_customer">
-                <input type="hidden" name="customer_id" id="edit_customer_id">
-                
+                <input type="hidden" name="customer_id" id="edit_id">
                 <div class="form-group">
-                    <label for="edit_name">Full Name *</label>
+                    <label>Full Name</label>
                     <input type="text" name="name" id="edit_name" required>
                 </div>
-
                 <div class="form-group">
-                    <label for="edit_email">Email Address *</label>
+                    <label>Email</label>
                     <input type="email" name="email" id="edit_email" required>
                 </div>
-
                 <div class="form-group">
-                    <label for="edit_phone">Phone Number *</label>
+                    <label>Phone</label>
                     <input type="tel" name="phone" id="edit_phone" required>
                 </div>
-
                 <div class="form-group">
-                    <label for="edit_address">Address</label>
+                    <label>Address</label>
                     <textarea name="address" id="edit_address"></textarea>
                 </div>
-
-                <div class="form-actions">
-                    <button type="button" class="btn-secondary" onclick="closeEditModal()">Cancel</button>
-                    <button type="submit" class="btn-primary">Update Customer</button>
-                </div>
+                <button type="submit" class="btn-primary">Update Customer</button>
             </form>
         </div>
     </div>
@@ -947,30 +616,26 @@ if ($activeResult) {
             document.getElementById('addModal').classList.add('active');
         }
 
-        function closeAddModal() {
-            document.getElementById('addModal').classList.remove('active');
-        }
-
-        function openEditModal(customer) {
-            document.getElementById('edit_customer_id').value = customer.id;
+        function editCustomer(customer) {
+            document.getElementById('edit_id').value = customer.customer_id;
             document.getElementById('edit_name').value = customer.name;
-            document.getElementById('edit_email').value = customer.email;
+            document.getElementById('edit_email').value = customer.email || '';
             document.getElementById('edit_phone').value = customer.phone || '';
-            document.getElementById('edit_address').value = customer.address || '';
+            document.getElementById('edit_address').value = '';
             document.getElementById('editModal').classList.add('active');
         }
 
-        function closeEditModal() {
-            document.getElementById('editModal').classList.remove('active');
+        function closeModal(id) {
+            document.getElementById(id).classList.remove('active');
         }
 
-        function deleteCustomer(customerId) {
-            if (confirm('Are you sure you want to delete this customer? This action cannot be undone.')) {
+        function deleteCustomer(id) {
+            if (confirm('Are you sure you want to delete this customer?')) {
                 const form = document.createElement('form');
                 form.method = 'POST';
                 form.innerHTML = `
                     <input type="hidden" name="action" value="delete_customer">
-                    <input type="hidden" name="customer_id" value="${customerId}">
+                    <input type="hidden" name="customer_id" value="${id}">
                 `;
                 document.body.appendChild(form);
                 form.submit();
@@ -978,18 +643,26 @@ if ($activeResult) {
         }
 
         function filterTable() {
-            const searchValue = document.getElementById('searchInput').value.toLowerCase();
+            const input = document.getElementById('searchInput');
+            const filter = input.value.toUpperCase();
             const table = document.getElementById('customersTable');
-            const rows = table.getElementsByTagName('tr');
+            const tr = table.getElementsByTagName('tr');
 
-            for (let i = 1; i < rows.length; i++) {
-                const row = rows[i];
-                const text = row.textContent.toLowerCase();
-                row.style.display = text.includes(searchValue) ? '' : 'none';
+            for (let i = 1; i < tr.length; i++) {
+                const td = tr[i].getElementsByTagName('td');
+                let found = false;
+                for (let j = 0; j < td.length; j++) {
+                    if (td[j]) {
+                        if (td[j].innerHTML.toUpperCase().indexOf(filter) > -1) {
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+                tr[i].style.display = found ? '' : 'none';
             }
         }
 
-        // Close modals when clicking outside
         window.onclick = function(event) {
             if (event.target.classList.contains('modal')) {
                 event.target.classList.remove('active');
