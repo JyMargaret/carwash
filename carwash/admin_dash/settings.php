@@ -1,4 +1,12 @@
 <?php
+session_set_cookie_params([
+    'lifetime' => 60 * 60 * 24 * 7,
+    'path' => '/',
+    'domain' => '',
+    'secure' => false,
+    'httponly' => true,
+    'samesite' => 'Lax'
+]);
 session_start();
 
 // Check if user is logged in and is admin
@@ -6,6 +14,10 @@ if (!isset($_SESSION['userEmail']) || $_SESSION['userRole'] !== 'admin') {
     header('Location: ../landing/login/login.php');
     exit;
 }
+
+// Set current page
+$current_page = 'settings';
+$adminName = $_SESSION['userName'] ?? 'Admin';
 
 // Include database connection
 include __DIR__ . '/../database/database.php';
@@ -32,7 +44,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ];
         
         foreach ($settings as $key => $value) {
-            // FIXED: Using 'system_settings' table instead of 'settings'
             $sql = "INSERT INTO system_settings (setting_key, setting_value) VALUES ('$key', '$value')
                     ON DUPLICATE KEY UPDATE setting_value = '$value'";
             $conn->query($sql);
@@ -49,18 +60,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $confirmPassword = $_POST['confirm_password'];
         
         $email = $_SESSION['userEmail'];
-        // FIXED: Using 'password_hash' column
         $sql = "SELECT password_hash FROM users WHERE email = '$email' LIMIT 1";
         $result = $conn->query($sql);
         
         if ($result && $result->num_rows > 0) {
             $user = $result->fetch_assoc();
-            // FIXED: Verifying against 'password_hash'
             if (password_verify($currentPassword, $user['password_hash'])) {
                 if ($newPassword === $confirmPassword) {
                     if (strlen($newPassword) >= 6) {
                         $hashedPassword = password_hash($newPassword, PASSWORD_DEFAULT);
-                        // FIXED: Updating 'password_hash'
                         $updateSql = "UPDATE users SET password_hash = '$hashedPassword' WHERE email = '$email'";
                         
                         if ($conn->query($updateSql)) {
@@ -101,7 +109,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ];
             
             foreach ($settings as $key => $value) {
-                // FIXED: Using 'system_settings'
                 $sql = "INSERT INTO system_settings (setting_key, setting_value) VALUES ('$key', '$value')
                         ON DUPLICATE KEY UPDATE setting_value = '$value'";
                 $conn->query($sql);
@@ -123,7 +130,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ];
         
         foreach ($notifSettings as $key => $value) {
-            // FIXED: Using 'system_settings'
             $sql = "INSERT INTO system_settings (setting_key, setting_value) VALUES ('$key', '$value')
                     ON DUPLICATE KEY UPDATE setting_value = '$value'";
             $conn->query($sql);
@@ -143,7 +149,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ];
         
         foreach ($systemSettings as $key => $value) {
-            // FIXED: Using 'system_settings'
             $sql = "INSERT INTO system_settings (setting_key, setting_value) VALUES ('$key', '$value')
                     ON DUPLICATE KEY UPDATE setting_value = '$value'";
             $conn->query($sql);
@@ -155,16 +160,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // Export all data
     if ($action === 'export_data') {
-        // FIXED: Added 'employees' and 'system_settings', removed incorrect names
         $exportTables = ['bookings', 'customers', 'services', 'employees', 'users', 'system_settings', 'reviews', 'payments'];
         $export = [];
         
-        // Get DB name dynamically
         $dbRes = $conn->query("SELECT DATABASE() AS dbname");
         $dbName = $dbRes->fetch_assoc()['dbname'];
 
         foreach ($exportTables as $t) {
-            // Check if table exists
             $tblRes = $conn->query("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '$dbName' AND TABLE_NAME = '$t'");
             if ($tblRes && $tblRes->num_rows > 0) {
                 $rows = [];
@@ -178,7 +180,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
 
-        // Send JSON download
         $filename = 'smartwash_export_' . date('Ymd_His') . '.json';
         header('Content-Type: application/json');
         header('Content-Disposition: attachment; filename="' . $filename . '"');
@@ -190,7 +191,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'deactivate_account') {
         $email = $_SESSION['userEmail'] ?? '';
         if ($email) {
-            // FIXED: Using 'status' column based on your schema
             $upd = "UPDATE users SET status = 'inactive' WHERE email = '$email'";
             if ($conn->query($upd)) {
                 session_unset();
@@ -205,9 +205,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// Fetch current settings (Helper function fixed)
+// Fetch current settings
 function getSetting($conn, $key, $default = '') {
-    // FIXED: Using 'system_settings'
     $sql = "SELECT setting_value FROM system_settings WHERE setting_key = '$key' LIMIT 1";
     $result = $conn->query($sql);
     if ($result && $result->num_rows > 0) {
@@ -230,21 +229,11 @@ $adminInfo = $adminResult ? $adminResult->fetch_assoc() : [];
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SmartWash - Settings</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f5f7fa; color: #333; display: flex; min-height: 100vh; }
 
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: #f5f7fa;
-            color: #333;
-            display: flex;
-            min-height: 100vh;
-        }
-
-        .sidebar {
+        /* SIDEBAR STYLES (Copied from index.php) */
+        .admin-sidebar {
             width: 260px;
             background: linear-gradient(180deg, #667eea 0%, #764ba2 100%);
             color: white;
@@ -254,16 +243,21 @@ $adminInfo = $adminResult ? $adminResult->fetch_assoc() : [];
             overflow-y: auto;
             transition: transform 0.3s ease;
             z-index: 999;
+            left: 0;
+            top: 0;
         }
 
-        .logo {
+        .admin-sidebar .logo {
             font-size: 1.8rem;
             font-weight: bold;
             padding: 0 1.5rem;
             margin-bottom: 2rem;
+            letter-spacing: 0.5px;
         }
 
-        .menu-item {
+        .admin-sidebar nav { display: flex; flex-direction: column; }
+
+        .admin-sidebar .menu-item {
             padding: 1rem 1.5rem;
             display: flex;
             align-items: center;
@@ -273,398 +267,161 @@ $adminInfo = $adminResult ? $adminResult->fetch_assoc() : [];
             border-left: 4px solid transparent;
             text-decoration: none;
             color: white;
+            font-size: 1rem;
+            position: relative;
         }
 
-        .menu-item:hover,
-        .menu-item.active {
+        .admin-sidebar .menu-item:hover {
+            background: rgba(255, 255, 255, 0.15);
+            border-left-color: rgba(255, 255, 255, 0.5);
+        }
+
+        .admin-sidebar .menu-item.active {
             background: rgba(255, 255, 255, 0.2);
             border-left-color: white;
-        }
-
-        .menu-icon {
-            font-size: 1.5rem;
-        }
-
-        .main-content {
-            margin-left: 260px;
-            flex: 1;
-            padding: 2rem;
-            width: calc(100% - 260px);
-        }
-
-        .header {
-            background: white;
-            padding: 1.5rem 2rem;
-            border-radius: 15px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 2rem;
-            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
-        }
-
-        .header h1 {
-            font-size: 1.8rem;
-            color: #333;
-        }
-
-        .settings-nav {
-            display: flex;
-            gap: 1rem;
-            margin-bottom: 2rem;
-            overflow-x: auto;
-            padding: 0.5rem 0;
-        }
-
-        .settings-tab {
-            padding: 0.8rem 1.5rem;
-            background: white;
-            border: 2px solid #e0e0e0;
-            border-radius: 25px;
-            cursor: pointer;
-            font-weight: 500;
-            transition: all 0.3s ease;
-            white-space: nowrap;
-        }
-
-        .settings-tab.active {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border-color: transparent;
-        }
-
-        .settings-tab:hover {
-            border-color: #667eea;
-        }
-
-        .card {
-            background: white;
-            padding: 2rem;
-            border-radius: 15px;
-            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
-            margin-bottom: 2rem;
-            display: none;
-        }
-
-        .card.active {
-            display: block;
-        }
-
-        .card-header {
-            margin-bottom: 1.5rem;
-            padding-bottom: 1rem;
-            border-bottom: 2px solid #f0f0f0;
-        }
-
-        .card-title {
-            font-size: 1.3rem;
             font-weight: 600;
-            color: #333;
         }
 
-        .card-subtitle {
-            font-size: 0.9rem;
-            color: #666;
-            margin-top: 0.3rem;
-        }
-
-        .form-group {
-            margin-bottom: 1.5rem;
-        }
-
-        .form-group label {
-            display: block;
-            margin-bottom: 0.5rem;
-            color: #333;
-            font-weight: 500;
-        }
-
-        .form-group input,
-        .form-group select,
-        .form-group textarea {
-            width: 100%;
-            padding: 0.8rem;
-            border: 2px solid #e0e0e0;
-            border-radius: 10px;
-            font-size: 1rem;
-            transition: border-color 0.3s ease;
-        }
-
-        .form-group textarea {
-            resize: vertical;
-            min-height: 100px;
-        }
-
-        .form-group input:focus,
-        .form-group select:focus,
-        .form-group textarea:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-
-        .form-row {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 1.5rem;
-        }
-
-        .checkbox-group {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            margin-bottom: 1rem;
-        }
-
-        .checkbox-group input[type="checkbox"] {
-            width: 20px;
-            height: 20px;
-            cursor: pointer;
-        }
-
-        .checkbox-group label {
-            margin: 0;
-            cursor: pointer;
-        }
-
-        .btn-primary {
-            padding: 0.8rem 1.5rem;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            border-radius: 25px;
-            cursor: pointer;
-            font-weight: 500;
-            transition: all 0.3s ease;
-            font-size: 1rem;
-        }
-
-        .btn-primary:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
-        }
-
-        .btn-secondary {
-            padding: 0.8rem 1.5rem;
+        .admin-sidebar .menu-item.active::after {
+            content: '';
+            position: absolute;
+            right: 1rem;
+            width: 8px;
+            height: 8px;
             background: white;
-            color: #667eea;
-            border: 2px solid #667eea;
-            border-radius: 25px;
-            cursor: pointer;
-            font-weight: 500;
-            transition: all 0.3s ease;
-            font-size: 1rem;
-        }
-
-        .btn-secondary:hover {
-            background: #667eea;
-            color: white;
-        }
-
-        .btn-danger {
-            padding: 0.8rem 1.5rem;
-            background: white;
-            color: #e74c3c;
-            border: 2px solid #e74c3c;
-            border-radius: 25px;
-            cursor: pointer;
-            font-weight: 500;
-            transition: all 0.3s ease;
-            font-size: 1rem;
-        }
-
-        .btn-danger:hover {
-            background: #e74c3c;
-            color: white;
-        }
-
-        .message {
-            padding: 1rem 1.5rem;
-            border-radius: 10px;
-            margin-bottom: 1.5rem;
-            animation: slideIn 0.3s ease;
-        }
-
-        .message.success {
-            background: #d4edda;
-            color: #155724;
-            border: 1px solid #c3e6cb;
-        }
-
-        .message.error {
-            background: #f8d7da;
-            color: #721c24;
-            border: 1px solid #f5c6cb;
-        }
-
-        @keyframes slideIn {
-            from {
-                transform: translateY(-20px);
-                opacity: 0;
-            }
-            to {
-                transform: translateY(0);
-                opacity: 1;
-            }
-        }
-
-        .hours-grid {
-            display: grid;
-            gap: 1rem;
-        }
-
-        .hours-row {
-            display: grid;
-            grid-template-columns: 150px 1fr 1fr 100px;
-            gap: 1rem;
-            align-items: center;
-            padding: 1rem;
-            background: #f8f9fa;
-            border-radius: 10px;
-        }
-
-        .day-label {
-            font-weight: 600;
-            color: #333;
-        }
-
-        .profile-avatar {
-            width: 100px;
-            height: 100px;
             border-radius: 50%;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            font-size: 3rem;
-            font-weight: bold;
-            margin: 0 auto 1rem;
         }
 
-        .info-box {
-            background: #f8f9fa;
-            padding: 1rem;
-            border-radius: 10px;
-            border-left: 4px solid #667eea;
-            margin-bottom: 1.5rem;
-        }
-
-        .info-box-title {
-            font-weight: 600;
-            color: #333;
-            margin-bottom: 0.3rem;
-        }
-
-        .info-box-text {
-            font-size: 0.9rem;
-            color: #666;
-        }
-
-        .mobile-menu-btn {
+        .mobile-menu-toggle {
             display: none;
             position: fixed;
-            bottom: 2rem;
-            right: 2rem;
-            width: 60px;
-            height: 60px;
-            border-radius: 50%;
+            top: 1rem;
+            left: 1rem;
+            width: 50px;
+            height: 50px;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
             border: none;
-            font-size: 1.5rem;
+            border-radius: 12px;
             cursor: pointer;
-            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
-            z-index: 1000;
+            z-index: 1001;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+            font-size: 1.5rem;
+            transition: all 0.3s ease;
         }
 
-        @media (max-width: 1024px) {
-            .form-row { grid-template-columns: 1fr; }
-            .hours-row { grid-template-columns: 1fr; }
-            table { font-size: 0.9rem; }
-            th, td { padding: 0.75rem; }
+        .mobile-menu-toggle:hover { transform: scale(1.05); }
+
+        .sidebar-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 998;
+            opacity: 0;
+            transition: opacity 0.3s ease;
         }
+
+        .sidebar-overlay.active { display: block; opacity: 1; }
+
+        /* MAIN CONTENT */
+        .main-content { margin-left: 260px; flex: 1; padding: 2rem; width: calc(100% - 260px); transition: margin-left 0.3s ease; }
+        .header { background: white; padding: 1.5rem 2rem; border-radius: 15px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1); }
+        .header h1 { font-size: 1.8rem; color: #333; }
+
+        .settings-nav { display: flex; gap: 1rem; margin-bottom: 2rem; overflow-x: auto; padding: 0.5rem 0; }
+        .settings-tab { padding: 0.8rem 1.5rem; background: white; border: 2px solid #e0e0e0; border-radius: 25px; cursor: pointer; font-weight: 500; transition: all 0.3s ease; white-space: nowrap; }
+        .settings-tab.active { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-color: transparent; }
+        .settings-tab:hover { border-color: #667eea; }
+
+        .card { background: white; padding: 2rem; border-radius: 15px; box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1); margin-bottom: 2rem; display: none; }
+        .card.active { display: block; }
+        .card-header { margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 2px solid #f0f0f0; }
+        .card-title { font-size: 1.3rem; font-weight: 600; color: #333; }
+        .card-subtitle { font-size: 0.9rem; color: #666; margin-top: 0.3rem; }
+
+        .form-group { margin-bottom: 1.5rem; }
+        .form-group label { display: block; margin-bottom: 0.5rem; color: #333; font-weight: 500; }
+        .form-group input, .form-group select, .form-group textarea { width: 100%; padding: 0.8rem; border: 2px solid #e0e0e0; border-radius: 10px; font-size: 1rem; transition: border-color 0.3s ease; }
+        .form-group textarea { resize: vertical; min-height: 100px; }
+        .form-group input:focus, .form-group select:focus, .form-group textarea:focus { outline: none; border-color: #667eea; }
+        .form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.5rem; }
+
+        .checkbox-group { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1rem; }
+        .checkbox-group input[type="checkbox"] { width: 20px; height: 20px; cursor: pointer; }
+        .checkbox-group label { margin: 0; cursor: pointer; }
+
+        .btn-primary { padding: 0.8rem 1.5rem; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 25px; cursor: pointer; font-weight: 500; transition: all 0.3s ease; font-size: 1rem; }
+        .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4); }
+        
+        .btn-secondary { padding: 0.8rem 1.5rem; background: white; color: #667eea; border: 2px solid #667eea; border-radius: 25px; cursor: pointer; font-weight: 500; transition: all 0.3s ease; font-size: 1rem; }
+        .btn-secondary:hover { background: #667eea; color: white; }
+        
+        .btn-danger { padding: 0.8rem 1.5rem; background: white; color: #e74c3c; border: 2px solid #e74c3c; border-radius: 25px; cursor: pointer; font-weight: 500; transition: all 0.3s ease; font-size: 1rem; }
+        .btn-danger:hover { background: #e74c3c; color: white; }
+
+        .message { padding: 1rem 1.5rem; border-radius: 10px; margin-bottom: 1.5rem; animation: slideIn 0.3s ease; }
+        .message.success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .message.error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        @keyframes slideIn { from { transform: translateY(-20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+        .hours-grid { display: grid; gap: 1rem; }
+        .hours-row { display: grid; grid-template-columns: 150px 1fr 1fr 100px; gap: 1rem; align-items: center; padding: 1rem; background: #f8f9fa; border-radius: 10px; }
+        .day-label { font-weight: 600; color: #333; }
+
+        .profile-avatar { width: 100px; height: 100px; border-radius: 50%; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); display: flex; align-items: center; justify-content: center; color: white; font-size: 3rem; font-weight: bold; margin: 0 auto 1rem; }
+        
+        .info-box { background: #f8f9fa; padding: 1rem; border-radius: 10px; border-left: 4px solid #667eea; margin-bottom: 1.5rem; }
+        .info-box-title { font-weight: 600; color: #333; margin-bottom: 0.3rem; }
+        .info-box-text { font-size: 0.9rem; color: #666; }
 
         @media (max-width: 768px) {
-            .sidebar {
-                transform: translateX(-100%);
-                position: fixed;
-                z-index: 1001;
-                width: 260px;
-            }
-
-            .sidebar.active {
-                transform: translateX(0);
-            }
-
-            .main-content {
-                margin-left: 0;
-                width: 100%;
-                padding: 1rem;
-            }
-
-            .header { padding: 1rem; }
-            .header h1 { font-size: 1.5rem; }
-            .form-row {
-                grid-template-columns: 1fr;
-            }
-
-            .hours-row {
-                grid-template-columns: 1fr;
-                text-align: center;
-            }
-
-            .settings-nav {
-                flex-wrap: wrap;
-                gap: 0.5rem;
-            }
-
-            .mobile-menu-btn {
-                display: block;
-            }
-
-            .card { padding: 1rem; }
-            table { font-size: 0.8rem; }
-            th, td { padding: 0.5rem; }
-            .btn-primary { padding: 0.5rem 1rem; font-size: 0.9rem; }
-        }
-
-        @media (max-width: 480px) {
-            .main-content { padding: 0.5rem; }
-            .header h1 { font-size: 1.2rem; }
-            .card { padding: 0.75rem; }
-            table { font-size: 0.7rem; }
-            th, td { padding: 0.4rem; }
-            .settings-nav { gap: 0.25rem; }
+            .admin-sidebar { transform: translateX(-100%); }
+            .admin-sidebar.active { transform: translateX(0); }
+            .mobile-menu-toggle { display: flex; align-items: center; justify-content: center; }
+            .main-content { margin-left: 0; width: 100%; }
+            .form-row { grid-template-columns: 1fr; }
+            .hours-row { grid-template-columns: 1fr; text-align: center; }
+            .settings-nav { flex-wrap: nowrap; }
         }
     </style>
 </head>
 <body>
-    <aside class="sidebar" id="sidebar">
+    <aside class="admin-sidebar" id="adminSidebar">
         <div class="logo">SmartWash Admin</div>
         <nav>
-            <div class="menu-item" onclick="window.location.href='index.php'">
-                <span>Dashboard</span>
-            </div>
-            <div class="menu-item" onclick="window.location.href='bookings.php'">
-                <span>Bookings</span>
-            </div>
-            <div class="menu-item" onclick="window.location.href='customers.php'">
-                <span>Customers</span>
-            </div>
-            <div class="menu-item" onclick="window.location.href='services.php'">
-                <span>Services</span>
-            </div>
-            <div class="menu-item" onclick="window.location.href='staff.php'">
-                <span>Staff</span>
-            </div>
-            <div class="menu-item" onclick="window.location.href='reports.php'">
-                <span>Reports</span>
-            </div>
-            <div class="menu-item active" onclick="window.location.href='settings.php'">
-                <span>Settings</span>
-            </div>
+            <a href="index.php" class="menu-item <?php echo ($current_page === 'index') ? 'active' : ''; ?>">
+                <span class="menu-label">Dashboard</span>
+            </a>
+            <a href="bookings.php" class="menu-item <?php echo ($current_page === 'bookings') ? 'active' : ''; ?>">
+                <span class="menu-label">Bookings</span>
+            </a>
+            <a href="customers.php" class="menu-item <?php echo ($current_page === 'customers') ? 'active' : ''; ?>">
+                <span class="menu-label">Customers</span>
+            </a>
+            <a href="services.php" class="menu-item <?php echo ($current_page === 'services') ? 'active' : ''; ?>">
+                <span class="menu-label">Services</span>
+            </a>
+            <a href="staff.php" class="menu-item <?php echo ($current_page === 'staff') ? 'active' : ''; ?>">
+                <span class="menu-label">Staff</span>
+            </a>
+            <a href="reports.php" class="menu-item <?php echo ($current_page === 'reports') ? 'active' : ''; ?>">
+                <span class="menu-label">Reports</span>
+            </a>
+            <a href="settings.php" class="menu-item <?php echo ($current_page === 'settings') ? 'active' : ''; ?>">
+                <span class="menu-label">Settings</span>
+            </a>
+            <a href="../landing/logout.php" class="menu-item">
+                <span class="menu-label">Logout</span>
+            </a>
         </nav>
     </aside>
+
+    <button class="mobile-menu-toggle" id="mobileMenuToggle" onclick="toggleSidebar()">☰</button>
+    <div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
 
     <main class="main-content">
         <div class="header">
@@ -760,13 +517,8 @@ $adminInfo = $adminResult ? $adminResult->fetch_assoc() : [];
                 <div class="hours-grid">
                     <?php
                     $days = [
-                        'monday' => 'Monday',
-                        'tuesday' => 'Tuesday',
-                        'wednesday' => 'Wednesday',
-                        'thursday' => 'Thursday',
-                        'friday' => 'Friday',
-                        'saturday' => 'Saturday',
-                        'sunday' => 'Sunday'
+                        'monday' => 'Monday', 'tuesday' => 'Tuesday', 'wednesday' => 'Wednesday',
+                        'thursday' => 'Thursday', 'friday' => 'Friday', 'saturday' => 'Saturday', 'sunday' => 'Sunday'
                     ];
                     
                     foreach ($days as $day => $label):
@@ -966,49 +718,46 @@ $adminInfo = $adminResult ? $adminResult->fetch_assoc() : [];
             </div>
         </div>
 
-            <form id="exportForm" method="POST" action="" style="display:none;">
-                <input type="hidden" name="action" value="export_data">
-            </form>
+        <form id="exportForm" method="POST" action="" style="display:none;">
+            <input type="hidden" name="action" value="export_data">
+        </form>
 
-            <form id="deactivateForm" method="POST" action="" style="display:none;">
-                <input type="hidden" name="action" value="deactivate_account">
-            </form>
+        <form id="deactivateForm" method="POST" action="" style="display:none;">
+            <input type="hidden" name="action" value="deactivate_account">
+        </form>
     </main>
 
-    <button class="mobile-menu-btn" onclick="toggleSidebar()">☰</button>
-
     <script>
+        function toggleSidebar() {
+            const sidebar = document.getElementById('adminSidebar');
+            const overlay = document.getElementById('sidebarOverlay');
+            const toggle = document.getElementById('mobileMenuToggle');
+            
+            sidebar.classList.toggle('active');
+            overlay.classList.toggle('active');
+            toggle.innerHTML = sidebar.classList.contains('active') ? '✕' : '☰';
+        }
+
+        function closeSidebar() {
+            const sidebar = document.getElementById('adminSidebar');
+            const overlay = document.getElementById('sidebarOverlay');
+            const toggle = document.getElementById('mobileMenuToggle');
+            
+            sidebar.classList.remove('active');
+            overlay.classList.remove('active');
+            toggle.innerHTML = '☰';
+        }
+
         function showTab(e, tabName) {
-            // Allow calling without event (backwards compatibility)
-            var evt = e;
-            if (typeof tabName === 'undefined') {
-                // caller used showTab(tabName)
-                tabName = e;
-                evt = null;
-            }
-
-            // Hide all cards
-            document.querySelectorAll('.card').forEach(card => {
-                card.classList.remove('active');
-            });
-
-            // Remove active class from all tabs
-            document.querySelectorAll('.settings-tab').forEach(tab => {
-                tab.classList.remove('active');
-            });
-
-            // Show selected card
+            // Remove active from all tabs
+            document.querySelectorAll('.settings-tab').forEach(tab => tab.classList.remove('active'));
+            // Remove active from all cards
+            document.querySelectorAll('.card').forEach(card => card.classList.remove('active'));
+            
+            // Add active to clicked tab
+            if(e && e.target) e.target.classList.add('active');
+            // Show target card
             document.getElementById(tabName).classList.add('active');
-
-            // Add active class to clicked tab if event available
-            try {
-                if (evt && evt.target) evt.target.classList.add('active');
-            } catch (err) { /* ignore */ }
-
-            // Close sidebar on mobile
-            if (window.innerWidth <= 768) {
-                document.getElementById('sidebar').classList.remove('active');
-            }
         }
 
         function toggleHours(day) {
@@ -1025,25 +774,17 @@ $adminInfo = $adminResult ? $adminResult->fetch_assoc() : [];
             }
         }
 
-        function toggleSidebar() {
-            document.getElementById('sidebar').classList.toggle('active');
-        }
-
         function confirmDataExport() {
             if (confirm('This will export all your system data as a JSON file. Continue?')) {
-                // submit hidden form to trigger server-side export
-                var f = document.getElementById('exportForm');
-                if (f) f.submit();
+                document.getElementById('exportForm').submit();
             }
         }
 
         function confirmAccountDeactivation() {
             if (confirm('⚠️ WARNING: This will deactivate your admin account!\n\nAre you sure you want to continue?')) {
                 if (confirm('This action is IRREVERSIBLE. Do you want to proceed and deactivate your account now?')) {
-                    // submit hidden form to deactivate
                     var f = document.getElementById('deactivateForm');
                     if (f) {
-                        // disable button to prevent double submit
                         var btn = document.querySelector('#deactivateBtn');
                         if (btn) btn.disabled = true;
                         f.submit();
@@ -1052,36 +793,37 @@ $adminInfo = $adminResult ? $adminResult->fetch_assoc() : [];
             }
         }
 
-        // Auto-hide success/error messages after 5 seconds
-        <?php if (!empty($message)): ?>
-        setTimeout(function() {
-            const alertMessage = document.getElementById('alertMessage');
-            if (alertMessage) {
-                alertMessage.style.opacity = '0';
-                alertMessage.style.transition = 'opacity 0.5s ease';
-                setTimeout(() => alertMessage.remove(), 500);
-            }
-        }, 5000);
-        <?php endif; ?>
-
-        // Close sidebar when clicking outside on mobile
+        // Close sidebar on mobile click outside
         document.addEventListener('click', function(event) {
-            const sidebar = document.getElementById('sidebar');
-            const menuBtn = document.querySelector('.mobile-menu-btn');
+            const sidebar = document.getElementById('adminSidebar');
+            const menuBtn = document.querySelector('#mobileMenuToggle');
             
             if (window.innerWidth <= 768) {
                 if (!sidebar.contains(event.target) && !menuBtn.contains(event.target)) {
-                    sidebar.classList.remove('active');
+                    closeSidebar();
                 }
             }
         });
 
-        // Password match validation
+        // Resize handler
+        window.addEventListener('resize', function() {
+            if (window.innerWidth > 768) {
+                closeSidebar();
+            }
+        });
+
+        // Auto-hide alert
+        const alertMsg = document.getElementById('alertMessage');
+        if (alertMsg) {
+            setTimeout(() => {
+                alertMsg.style.opacity = '0';
+                setTimeout(() => alertMsg.remove(), 500);
+            }, 5000);
+        }
+
+        // Password matching
         document.getElementById('confirm_password')?.addEventListener('input', function() {
-            const newPassword = document.getElementById('new_password').value;
-            const confirmPassword = this.value;
-            
-            if (newPassword !== confirmPassword) {
+            if (document.getElementById('new_password').value !== this.value) {
                 this.setCustomValidity('Passwords do not match');
             } else {
                 this.setCustomValidity('');
@@ -1090,3 +832,6 @@ $adminInfo = $adminResult ? $adminResult->fetch_assoc() : [];
     </script>
 </body>
 </html>
+<?php
+$conn->close();
+?>

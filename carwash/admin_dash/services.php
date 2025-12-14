@@ -1,9 +1,23 @@
 <?php
+session_set_cookie_params([
+    'lifetime' => 60 * 60 * 24 * 7,
+    'path' => '/',
+    'domain' => '',
+    'secure' => false,
+    'httponly' => true,
+    'samesite' => 'Lax'
+]);
 session_start();
+
+// Check if user is logged in and is admin
 if (!isset($_SESSION['userEmail']) || $_SESSION['userRole'] !== 'admin') {
     header('Location: ../landing/login/login.php');
     exit;
 }
+
+// Set current page for sidebar
+$current_page = 'services';
+
 include __DIR__ . '/../database/database.php';
 
 // Handle Actions
@@ -19,15 +33,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $status = $_POST['status'] === 'active' ? 1 : 0;
         $icon = $conn->real_escape_string($_POST['icon'] ?? '🚗');
         
-        // Check for features
+        // Check for features (if you have them in the form)
         $features = isset($_POST['features']) ? json_encode(explode(',', $_POST['features'])) : '[]';
 
         $sql = "INSERT INTO services (service_name, description, base_price, duration_minutes, service_type, is_active) 
                 VALUES ('$name', '$desc', $price, $duration, '$type', $status)";
         
         if ($conn->query($sql)) {
-            // Note: If you have a separate features table or column, handle it here. 
-            // For now we just insert the main service data based on your schema.
             header('Location: services.php');
             exit;
         } else {
@@ -80,22 +92,119 @@ while ($row = $servicesResult->fetch_assoc()) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SmartWash - Services Management</title>
     <style>
-        /* Keeping original styles */
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f5f7fa; color: #333; display: flex; min-height: 100vh; }
-        .sidebar { width: 260px; background: linear-gradient(180deg, #667eea 0%, #764ba2 100%); color: white; padding: 2rem 0; position: fixed; height: 100vh; overflow-y: auto; transition: transform 0.3s ease; }
-        .logo { font-size: 1.8rem; font-weight: bold; padding: 0 1.5rem; margin-bottom: 2rem; }
-        .menu-item { padding: 1rem 1.5rem; display: flex; align-items: center; gap: 1rem; cursor: pointer; transition: all 0.3s ease; border-left: 4px solid transparent; text-decoration: none; color: white; }
-        .menu-item:hover, .menu-item.active { background: rgba(255, 255, 255, 0.2); border-left-color: white; }
-        .main-content { margin-left: 260px; flex: 1; padding: 2rem; width: calc(100% - 260px); }
+
+        /* SIDEBAR STYLES */
+        .admin-sidebar {
+            width: 260px;
+            background: linear-gradient(180deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 2rem 0;
+            position: fixed;
+            height: 100vh;
+            overflow-y: auto;
+            transition: transform 0.3s ease;
+            z-index: 999;
+            left: 0;
+            top: 0;
+        }
+
+        .admin-sidebar .logo {
+            font-size: 1.8rem;
+            font-weight: bold;
+            padding: 0 1.5rem;
+            margin-bottom: 2rem;
+            letter-spacing: 0.5px;
+        }
+
+        .admin-sidebar nav { display: flex; flex-direction: column; }
+
+        .admin-sidebar .menu-item {
+            padding: 1rem 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            border-left: 4px solid transparent;
+            text-decoration: none;
+            color: white;
+            font-size: 1rem;
+            position: relative;
+        }
+
+        .admin-sidebar .menu-item:hover {
+            background: rgba(255, 255, 255, 0.15);
+            border-left-color: rgba(255, 255, 255, 0.5);
+        }
+
+        .admin-sidebar .menu-item.active {
+            background: rgba(255, 255, 255, 0.2);
+            border-left-color: white;
+            font-weight: 600;
+        }
+
+        .admin-sidebar .menu-item.active::after {
+            content: '';
+            position: absolute;
+            right: 1rem;
+            width: 8px;
+            height: 8px;
+            background: white;
+            border-radius: 50%;
+        }
+
+        .mobile-menu-toggle {
+            display: none;
+            position: fixed;
+            top: 1rem;
+            left: 1rem;
+            width: 50px;
+            height: 50px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            cursor: pointer;
+            z-index: 1001;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+            font-size: 1.5rem;
+            transition: all 0.3s ease;
+        }
+
+        .mobile-menu-toggle:hover { transform: scale(1.05); }
+
+        .sidebar-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 998;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+
+        .sidebar-overlay.active { display: block; opacity: 1; }
+
+        /* MAIN CONTENT */
+        .main-content { margin-left: 260px; flex: 1; padding: 2rem; width: calc(100% - 260px); transition: margin-left 0.3s ease; }
+        
         .header { background: white; padding: 1.5rem 2rem; border-radius: 15px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1); }
         .header h1 { font-size: 1.8rem; color: #333; }
+        
         .btn-primary { padding: 0.8rem 1.8rem; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 25px; cursor: pointer; font-weight: 500; transition: all 0.3s ease; font-size: 1rem; }
         .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4); }
+        
         .btn-secondary { padding: 0.5rem 1rem; background: white; color: #667eea; border: 2px solid #667eea; border-radius: 20px; cursor: pointer; font-weight: 500; transition: all 0.3s ease; font-size: 0.85rem; }
         .btn-secondary:hover { background: #667eea; color: white; }
+        
         .btn-danger { padding: 0.5rem 1rem; background: white; color: #e74c3c; border: 2px solid #e74c3c; border-radius: 20px; cursor: pointer; font-weight: 500; transition: all 0.3s ease; font-size: 0.85rem; }
         .btn-danger:hover { background: #e74c3c; color: white; }
+        
         .services-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 1.5rem; margin-bottom: 2rem; }
         .service-card { background: white; border-radius: 15px; box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1); overflow: hidden; transition: all 0.3s ease; position: relative; }
         .service-card:hover { transform: translateY(-5px); box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15); }
@@ -113,6 +222,7 @@ while ($row = $servicesResult->fetch_assoc()) {
         .status-badge { position: absolute; top: 1rem; right: 1rem; padding: 0.4rem 1rem; border-radius: 20px; font-size: 0.8rem; font-weight: 500; }
         .status-active { background: #d4edda; color: #155724; }
         .status-inactive { background: #f8d7da; color: #721c24; }
+        
         /* Modal Styles */
         .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 0, 0, 0.5); z-index: 2000; align-items: center; justify-content: center; }
         .modal.active { display: flex; }
@@ -125,39 +235,50 @@ while ($row = $servicesResult->fetch_assoc()) {
         .form-input, .form-textarea, .form-select { width: 100%; padding: 0.8rem; border: 2px solid #e0e0e0; border-radius: 10px; font-size: 1rem; transition: border-color 0.3s ease; }
         .form-input:focus, .form-textarea:focus, .form-select:focus { outline: none; border-color: #667eea; }
         .modal-actions { display: flex; gap: 1rem; justify-content: flex-end; margin-top: 2rem; padding-top: 1rem; border-top: 2px solid #f0f0f0; }
+        
         @media (max-width: 1024px) { .services-grid { grid-template-columns: repeat(2, 1fr); gap: 1rem; } }
         @media (max-width: 768px) { 
-            .sidebar { transform: translateX(-100%); position: fixed; z-index: 1000; width: 260px; } 
+            .admin-sidebar { transform: translateX(-100%); }
+            .admin-sidebar.active { transform: translateX(0); }
+            .mobile-menu-toggle { display: flex; align-items: center; justify-content: center; }
             .main-content { margin-left: 0; width: 100%; padding: 1rem; }
             .header { padding: 1rem; }
             .header h1 { font-size: 1.5rem; }
             .services-grid { grid-template-columns: 1fr; gap: 1rem; }
             .card { padding: 1rem; }
-            table { font-size: 0.8rem; }
-            th, td { padding: 0.5rem; }
-        }
-        @media (max-width: 480px) {
-            .main-content { padding: 0.5rem; }
-            .header h1 { font-size: 1.2rem; }
-            .card { padding: 0.75rem; }
-            table { font-size: 0.7rem; }
-            th, td { padding: 0.4rem; }
         }
     </style>
 </head>
 <body>
-    <aside class="sidebar">
+    <aside class="admin-sidebar" id="adminSidebar">
         <div class="logo">SmartWash Admin</div>
         <nav>
-            <a href="index.php" class="menu-item">Dashboard</a>
-            <a href="bookings.php" class="menu-item">Bookings</a>
-            <a href="customers.php" class="menu-item">Customers</a>
-            <a href="services.php" class="menu-item active">Services</a>
-            <a href="staff.php" class="menu-item">Staff</a>
-            <a href="reports.php" class="menu-item">Reports</a>
-            <a href="settings.php" class="menu-item">Settings</a>
+            <a href="index.php" class="menu-item <?php echo ($current_page === 'index') ? 'active' : ''; ?>">
+                <span class="menu-label">Dashboard</span>
+            </a>
+            <a href="bookings.php" class="menu-item <?php echo ($current_page === 'bookings') ? 'active' : ''; ?>">
+                <span class="menu-label">Bookings</span>
+            </a>
+            <a href="customers.php" class="menu-item <?php echo ($current_page === 'customers') ? 'active' : ''; ?>">
+                <span class="menu-label">Customers</span>
+            </a>
+            <a href="services.php" class="menu-item <?php echo ($current_page === 'services') ? 'active' : ''; ?>">
+                <span class="menu-label">Services</span>
+            </a>
+            <a href="staff.php" class="menu-item <?php echo ($current_page === 'staff') ? 'active' : ''; ?>">
+                <span class="menu-label">Staff</span>
+            </a>
+            <a href="reports.php" class="menu-item <?php echo ($current_page === 'reports') ? 'active' : ''; ?>">
+                <span class="menu-label">Reports</span>
+            </a>
+            <a href="settings.php" class="menu-item <?php echo ($current_page === 'settings') ? 'active' : ''; ?>">
+                <span class="menu-label">Settings</span>
+            </a>
         </nav>
     </aside>
+
+    <button class="mobile-menu-toggle" id="mobileMenuToggle" onclick="toggleSidebar()">☰</button>
+    <div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
 
     <main class="main-content">
         <div class="header">
@@ -267,6 +388,44 @@ while ($row = $servicesResult->fetch_assoc()) {
     </div>
 
     <script>
+        function toggleSidebar() {
+            const sidebar = document.getElementById('adminSidebar');
+            const overlay = document.getElementById('sidebarOverlay');
+            const toggle = document.getElementById('mobileMenuToggle');
+            
+            sidebar.classList.toggle('active');
+            overlay.classList.toggle('active');
+            toggle.innerHTML = sidebar.classList.contains('active') ? '✕' : '☰';
+        }
+
+        function closeSidebar() {
+            const sidebar = document.getElementById('adminSidebar');
+            const overlay = document.getElementById('sidebarOverlay');
+            const toggle = document.getElementById('mobileMenuToggle');
+            
+            sidebar.classList.remove('active');
+            overlay.classList.remove('active');
+            toggle.innerHTML = '☰';
+        }
+
+        // Close sidebar on mobile when clicking outside or resizing
+        document.addEventListener('click', function(event) {
+            const sidebar = document.getElementById('adminSidebar');
+            const menuBtn = document.getElementById('mobileMenuToggle');
+            
+            if (window.innerWidth <= 768) {
+                if (!sidebar.contains(event.target) && !menuBtn.contains(event.target)) {
+                    closeSidebar();
+                }
+            }
+        });
+
+        window.addEventListener('resize', function() {
+            if (window.innerWidth > 768) {
+                closeSidebar();
+            }
+        });
+
         function openAddModal() {
             document.getElementById('serviceForm').reset();
             document.getElementById('formAction').value = 'add_service';
